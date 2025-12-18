@@ -12,7 +12,7 @@ As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kern
 
 > **Any kernel can be plugged to silik**
 
-![](silik_console.png)
+![](https://github.com/mariusgarenaux/silik-kernel/blob/main/silik_console.png?raw=true)
 
 ## Getting started
 
@@ -39,6 +39,7 @@ To use diverse kernels through silik, you can install some example kernels (on t
 Once the kernel is started, you can :
 
 - send commands :
+  - `!help` : display this message
   - `!start <kernel_type>` : starts a kernel; it will be assigned a label. Per example, `!start python3` starts and connect to a python3 kernel.
   - `!restart <kernel_label>` : restart a kernel with its label.
   - `!ls` : list started kernels.
