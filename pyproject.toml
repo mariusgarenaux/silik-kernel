@@ -5,6 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "silik-kernel"
 dynamic = ["version"]
+
 description = "Multi-kernel Manager"
 readme = "README.md"
 license = { file = "LICENSE-2.0.txt" }
@@ -15,9 +16,9 @@ classifiers = ["Programming Language :: Python :: 3"]
 requires-python = ">=3.12"
 dependencies = ["ipykernel>=7.1.0", "jupyter-client>=8.6.3"]
 
+[project.urls]
+Repository = "https://github.com/mariusgarenaux/silik-kernel"
 
-# [project.urls]
-# Homepage = "https://github.com/jupyter/echo_kernel"
 
 [tool.hatch.version]
 path = "silik_kernel/__init__.py"
