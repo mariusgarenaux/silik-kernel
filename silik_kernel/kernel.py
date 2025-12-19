@@ -229,7 +229,7 @@ class SilikBaseKernel(Kernel):
     code cells towards different kernels, e.g. :
 
     - octave
-    - pydantic ai agent based kernel
+    - pydantic ai agent based kernel (https://github.com/mariusgarenaux/pydantic-ai-kernel)
     - python
     - ...
 

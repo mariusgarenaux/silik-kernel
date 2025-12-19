@@ -30,7 +30,7 @@ Any jupyter frontend should be able to access the kernel, for example :
 
 • **Silik Signal Messaging** : Access the kernel through Signal Message Application.
 
-To use diverse kernels through silik, you can install some example kernels (on the same python venv): [chatbot](./chatbot_kernel/), [rudi](./rudi_kernel/). You can also create new agent-based kernel by subclassing [pydantic-ai base kernel](./pydantic_ai_base_kernel/).
+To use diverse kernels through silik, you can install some example kernels : [https://github.com/Tariqve/jupyter-kernels](https://github.com/Tariqve/jupyter-kernels). You can also create new agent-based kernel by subclassing [pydantic-ai base kernel](https://github.com/mariusgarenaux/pydantic-ai-kernel).
 
 > You can list the available kernels by running `jupyter kernelspec list` in a terminal.
 
