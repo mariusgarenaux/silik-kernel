@@ -14,6 +14,12 @@ As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kern
 
 ![](https://github.com/mariusgarenaux/silik-kernel/blob/main/silik_console.png?raw=true)
 
+> But managing multi-kernels seems to be a nightmare ?
+
+**Not with Agents and LLM**. In order to allow users to easily manage multi-kernels, we present a way to access AI agents through jupyter kernels. To do so, we provide a [wrapper of a pydantic-ai agent in a kernel](https://github.com/mariusgarenaux/pydantic-ai-kernel). This allows to interact easily with these agents, through ipython for example, and let them manage the output of cells.
+
+It also allows to share agents easily (with **pypi** for example); because they can be shipped in a python module. We split properly the agent and the interaction framework with the agent, by reusing the ones from jupyter kernels.
+
 ## Getting started
 
 ```bash
