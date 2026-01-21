@@ -50,6 +50,7 @@ Once the kernel is started, you can :
   - `!restart <kernel_label>` : restart a kernel with its label.
   - `!ls` : list started kernels.
   - `!select <kernel_label>`: switch a started kernel with its label
+  - `!kernels`: list available kernels types
 
 - run code :
   - if you run `!ls`, you'll see which kernel you are on.
