@@ -54,22 +54,31 @@ You can also run /cnct to avoid typing `run`. /cmd allows at any time to go back
 
 Here is a quick reminder of available commands
 
-- send commands :
-  • cd <path> : Moves the selected kernel in the kernel tree
-  • ls | tree : Displays the kernels tree
-  • mkdir <kernel_type> --label=<kernel_label> : starts a kernel (see 'kernels' command)
-  • run <code> | r <code> : run code on selected kernel - in one shot
-  • restart : restart the selected kernel
-  • branch <kernel_label> : branch the output of selected kernel to the input of one of its children. Output of parent kernel is now output of children kernel. (In -> Parent Kernel -> Children Kernel -> Out)
-  • detach : detach the branch starting from the selected kernel
-  • history : displays the cells input history for this kernel
-  • kernels : displays the list of available kernels types
-  • /cnct : direct connection towards selected kernel : cells will be directly executed on this kernel; except if cell content is '/cmd'
-  • /cmd : switch to command mode (default one) - exit /cnct mode
+• cd <path> : Moves the selected kernel in the kernel tree
+
+• ls | tree : Displays the kernels tree
+
+• mkdir <kernel_type> --label=<kernel_label> : starts a kernel (see 'kernels' command)
+
+• run `code` | r `code` : run code on selected kernel - in one shot
+
+• restart : restart the selected kernel
+
+• branch <kernel_label> : branch the output of selected kernel to the input of one of its children. Output of parent kernel is now output of children kernel. (In -> Parent Kernel -> Children Kernel -> Out)
+
+• detach : detach the branch starting from the selected kernel
+
+• history : displays the cells input history for this kernel
+
+• kernels : displays the list of available kernels types
+
+• /cnct : direct connection towards selected kernel : cells will be directly executed on this kernel; except if cell content is '/cmd'
+
+• /cmd : switch to command mode (default one) - exit /cnct mode
 
 ## Recursive
 
-You can start a silik kernel from a silik kernel. But you can only control the children-silik with 'run <code>'; and not directly /cmd or /cnct (because these two are catched before by the first silik). Here is an example :
+You can start a silik kernel from a silik kernel. But you can only control the children-silik with 'run `code`'; and not directly /cmd or /cnct (because these two are catched before by the first silik). Here is an example :
 
 ![](https://github.com/mariusgarenaux/silik-kernel/blob/main/silik_console_2.png?raw=true)
 
