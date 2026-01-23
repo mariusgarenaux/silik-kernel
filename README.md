@@ -8,9 +8,9 @@ This is a jupyter kernel that allows to interface with multiple kernels, you can
 
 - list available kernels.
 
-As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kernel; and returns the result in a cell output. It gives a **single context** that is shared between kernels. The cell history is shared with sub-kernels within the 'metadata' attribute of execution messages.
+As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kernel; and returns the result in a cell output.
 
-> **Any kernel can be plugged to silik**
+> **Any jupyter kernel can be plugged to silik**
 
 ![](https://github.com/mariusgarenaux/silik-kernel/blob/main/silik_console.png?raw=true)
 
@@ -42,37 +42,35 @@ To use diverse kernels through silik, you can install some example kernels : [ht
 
 ## Usage
 
-Once the kernel is started, you can :
+### Tuto
+
+Start by running `mkdir <kernel_type> --label=my-kernel` with <kernel_type> among ['code-helper', 'python3', 'pydantic_ai', 'silik', 'rudi', 'ir', 'test_kernel'].
+
+Then, you can run `cd my-kernel` and, `run <code>` to run one shot code in this kernel.
+
+You can also run /cnct to avoid typing `run`. /cmd allows at any time to go back to command mode (navigation and creation of kernels).
+
+### Commands
+
+Here is a quick reminder of available commands
 
 - send commands :
-  - `!help` : display this message
-  - `!start <kernel_type>` : starts a kernel; it will be assigned a label. Per example, `!start python3` starts and connect to a python3 kernel.
-  - `!restart <kernel_label>` : restart a kernel with its label.
-  - `!ls` : list started kernels.
-  - `!select <kernel_label>`: switch a started kernel with its label
-  - `!kernels`: list available kernels types
+  • cd <path> : Moves the selected kernel in the kernel tree
+  • ls | tree : Displays the kernels tree
+  • mkdir <kernel_type> --label=<kernel_label> : starts a kernel (see 'kernels' command)
+  • run <code> | r <code> : run code on selected kernel - in one shot
+  • restart : restart the selected kernel
+  • branch <kernel_label> : branch the output of selected kernel to the input of one of its children. Output of parent kernel is now output of children kernel. (In -> Parent Kernel -> Children Kernel -> Out)
+  • detach : detach the branch starting from the selected kernel
+  • history : displays the cells input history for this kernel
+  • kernels : displays the list of available kernels types
+  • /cnct : direct connection towards selected kernel : cells will be directly executed on this kernel; except if cell content is '/cmd'
+  • /cmd : switch to command mode (default one) - exit /cnct mode
 
-- run code :
-  - if you run `!ls`, you'll see which kernel you are on.
-  - all cells you send will be executed in this kernel, and the result will be given in the cell output. Silik kernel acts as a gateway for the sub-kernels.
+## Recursive
 
-## Retrieving cells history with a custom kernel
+You can start a silik kernel from a silik kernel. But you can only control the children-silik with 'run <code>'; and not directly /cmd or /cnct (because these two are catched before by the first silik). Here is an example :
 
-If you want to retrieve the history of the silik kernel within your custom kernel, you just have to access the 'metadata' attribute of the current message. For example (assuming you use subclass the ipykernel, and self is your kernel instance) :
+![](https://github.com/mariusgarenaux/silik-kernel/blob/main/silik_console_2.png?raw=true)
 
-```python
-parent = self.get_parent()
-metadata = parent.get("metadata", {})
-if isinstance(metadata, dict) and "message_history" in metadata:
-    print(metadata["message_history"])
-```
-
-The attribute 'message_history' of the metadata is a list of dict, each with :
-
-```python
-{
-  "role": "user or assistant; user for cell input, assistant for cell output",
-  "content": "Input Code if user, output if assistant",
-  "uid": "uuidv4"
-}
-```
+> You can hence implement your own sub-class of silik kernel, and add any method for spreading silik input to sub-kernels, and merging output of sub-kernels to produce silik output.

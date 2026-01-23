@@ -1,11 +1,14 @@
-# Base python dependencies
+# Basic python dependencies
 import os
+import traceback
 from dataclasses import dataclass, field
 from uuid import uuid4
+import re
 import random
 from pathlib import Path
 import logging
-from typing import Literal, List, Optional
+from typing import Literal, List, Optional, Callable
+import shlex
 
 # External dependencies
 from ipykernel.kernelbase import Kernel
@@ -25,14 +28,12 @@ ALL_KERNELS_LABELS = [
     "taco",
     "rose",
     "thym",
-    "mite",
     "miel",
     "lion",
-    "clou",
-    "oeuf",
     "pneu",
     "lune",
     "ciel",
+    "coco",
 ]
 random.shuffle(ALL_KERNELS_LABELS)
 
@@ -71,6 +72,7 @@ class KernelMetadata:
     label: str
     type: str
     id: str
+    is_branched_to: "KernelMetadata | None" = None
 
 
 @dataclass
@@ -90,31 +92,102 @@ class KernelTreeNode:
 
     def tree_to_str(self, pinned_node: KernelMetadata):
         def str_from_node(
-            node: KernelTreeNode, prefix: str = "", is_last: bool = True
+            node: KernelTreeNode,
+            prefix: str = "",
+            is_last: bool = True,
+            label_decorator="",
         ) -> str:
             # Initialize the representation of the tree as a list
             result = []
 
             # Append current node's label to the result
             displayed_label = (
-                f"{node.value.label} [{node.value.type}]"
+                f"{label_decorator} {node.value.label} [{node.value.type}]"
                 if node.value != pinned_node
-                else f">> {node.value.label} << [{node.value.type}]"
+                else f"{label_decorator} {node.value.label} [{node.value.type}] <<"
             )
-            result.append(f"{prefix}{'└─ ' if is_last else '├─ '}{displayed_label}\n")
+            result.append(f"{prefix}{'╰─' if is_last else '├─'}{displayed_label}\n")
 
             # Determine the new prefix for child nodes
-            new_prefix = prefix + ("    " if is_last else "│   ")
+            new_prefix = prefix + ("   " if is_last else "│  ")
 
             # Iterate over children and build the representation recursively
             for index, child in enumerate(node.children):
-                result.append(
-                    str_from_node(child, new_prefix, index == len(node.children) - 1)
-                )
+                if child.value == node.value.is_branched_to:
+                    result.append(
+                        str_from_node(
+                            child,
+                            new_prefix,
+                            index == len(node.children) - 1,
+                            ">",
+                        ),
+                    )
+                else:
+                    result.append(
+                        str_from_node(
+                            child, new_prefix, index == len(node.children) - 1
+                        )
+                    )
 
             return "".join(result)  # Join the list into a single string
 
-        return str_from_node(self)
+        output = []
+        for index, child in enumerate(self.children):
+            output.append(
+                str_from_node(
+                    child,
+                    prefix="",
+                    is_last=index == len(self.children) - 1,
+                )
+            )
+
+        return "".join(output)
+
+
+class SilikCommandArgs:
+    def __init__(self):
+        pass
+
+
+class SilikCommandParser:
+    def __init__(
+        self, positionals: list[str] | None = None, flags: list[str] | None = None
+    ):
+        self.positionals = positionals if positionals is not None else []
+        self.flags = flags if flags is not None else []
+
+    def parse(self, components):
+        # Create an argument object
+        arg_obj = SilikCommandArgs()
+        for each_positional in self.positionals:
+            arg_obj.__setattr__(each_positional, False)
+        for each_flag in self.flags:
+            arg_obj.__setattr__(each_flag, False)
+
+        positional_idx = 0
+        # Handle parameters and flags
+        for component in components:
+            if component.startswith("--"):
+                # Handle flags
+                if "=" in component:
+                    key, value = component[2:].split("=", 1)
+                    if key in self.flags:
+                        arg_obj.__setattr__(key, value)
+                    else:
+                        raise ValueError(f"Unknown flag '{key}'")
+                else:
+                    key = component[2:]
+                    if key in self.flags:
+                        arg_obj.__setattr__(key, True)
+                    else:
+                        raise ValueError(f"Unknown flag '{key}'")
+            else:
+                arg_obj.__setattr__(
+                    self.positionals[positional_idx], component
+                )  # Store the value or process as needed
+                positional_idx += 1
+
+        return arg_obj
 
 
 class SilikBaseKernel(Kernel):
@@ -184,11 +257,33 @@ class SilikBaseKernel(Kernel):
             self.logger = self.log
 
         self.ksm = KernelSpecManager()
-        self.mode: Literal["cmd", "run"] = "cmd"
+        self.mode: Literal["cmd", "cnct"] = "cmd"
         self.active_kernel: KernelMetadata = self.kernel_metadata
         self.root_node: KernelTreeNode = KernelTreeNode(
             self.kernel_metadata
         )  # stores the tree of all kernels
+        self.all_kernels: list[KernelMetadata] = []
+
+        ls_cmd = SilikCommand(self.ls_cmd_handler)
+        run_cmd = SilikCommand(self.run_cmd_handler, SilikCommandParser(["cmd"]))
+        self.all_cmds: dict[str, SilikCommand] = {
+            "cd": SilikCommand(self.cd_cmd_handler, SilikCommandParser(["path"])),
+            "mkdir": SilikCommand(
+                self.mkdir_cmd_handler, SilikCommandParser(["kernel_type"], ["label"])
+            ),
+            "ls": ls_cmd,
+            "tree": ls_cmd,
+            "restart": SilikCommand(self.restart_cmd_handler),
+            "kernels": SilikCommand(self.kernels_cmd_handler),
+            "history": SilikCommand(self.history_cmd_handler),
+            "branch": SilikCommand(
+                self.branch_cmd_handler, SilikCommandParser(["kernel_label"])
+            ),
+            "detach": SilikCommand(self.detach_cmd_handler),
+            "run": run_cmd,
+            "r": run_cmd,
+            "help": SilikCommand(self.help_cmd_handler),
+        }
 
     async def get_kernel_history(self, kernel_id):
         """
@@ -227,6 +322,11 @@ class SilikBaseKernel(Kernel):
     def get_available_kernels(self) -> list[str]:
         specs = self.ksm.find_kernel_specs()
         return list(specs.keys())
+
+    def get_kernel_from_label(self, kernel_label: str) -> KernelMetadata | None:
+        for each_kernel in self.all_kernels:
+            if each_kernel.label == kernel_label:
+                return each_kernel
 
     def find_node_by_metadata(
         self, kernel_metadata: KernelMetadata
@@ -278,11 +378,15 @@ class SilikBaseKernel(Kernel):
 
         return current_node.value  # Return the KernelMetadata of the found node
 
-    async def start_kernel(self, kernel_name):
+    async def start_kernel(self, kernel_name: str, kernel_label: str | None = None):
+        """
+        Starts a kernel from its name (python3, ...)
+        """
         self.logger.debug(f"Starting new kernel of type : {kernel_name}")
         kernel_id = str(uuid4())
-        kernel_label = self.all_kernels_labels[self.kernel_label_rank]
-        self.kernel_label_rank += 1
+        if kernel_label is None:
+            kernel_label = self.all_kernels_labels[self.kernel_label_rank]
+            self.kernel_label_rank += 1
         new_kernel = KernelMetadata(label=kernel_label, type=kernel_name, id=kernel_id)
         await self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.logger.debug(f"Successfully started kernel {new_kernel}")
@@ -291,7 +395,7 @@ class SilikBaseKernel(Kernel):
 
     async def _do_execute(
         self,
-        code,
+        code: str,
         silent,
         store_history=True,
         user_expressions=None,
@@ -304,82 +408,17 @@ class SilikBaseKernel(Kernel):
             - select kernel to run future code on,
             - start a kernel.
         """
-        out = self.parse_command(code)
-        cmd, arg = out
-        error = False
-        match cmd:
-            case "cd":
-                if arg is None:  # cd
-                    found_kernel = self.kernel_metadata
-                else:
-                    found_kernel = self.find_kernel_metadata_from_path(arg)
-                if found_kernel is None:
-                    error = True
-                    content = f"Could not find kernel located at {arg}"
-                else:
-                    self.active_kernel = found_kernel
-                    content = self.root_node.tree_to_str(self.active_kernel)
-            case "mkdir":
-                active_node = self.find_node_by_metadata(self.active_kernel)
-                if active_node is None:
-                    error = True
-                    content = f"Could not find node in the kernel tree with value {self.active_kernel}"
-                elif arg == "":
-                    error = True
-                    content = f"Please specify a kernel-type among {self.get_available_kernels}"
-                else:
-                    new_kernel = await self.start_kernel(arg)
-                    active_node.children.append(
-                        KernelTreeNode(new_kernel, parent=active_node)
-                    )
-                    content = self.root_node.tree_to_str(self.active_kernel)
-            case "tree" | "ls":
-                content = self.root_node.tree_to_str(self.active_kernel)
-            # case "restart":
-            #     found_kernel = self.get_kernel_with_label(arg)
-            #     if found_kernel is None:
-            #         content = f"Could not find kernel with label {arg}"
-            #     else:
-            #         await self.mkm.restart_kernel(found_kernel.id)
-            #         content = f"Restarted kernel {found_kernel}"
-            # case "ls":
-            #     content = (
-            #         f"{self.kernel_metadata.label}\n"
-            #         if self.active_kernel != self.kernel_metadata
-            #         else f">> {self.kernel_metadata.label} <<\n"
-            #     )
-            #     for k in range(len(self.all_sub_kernels)):
-            #         knl = self.all_sub_kernels[k]
-            #         label = (
-            #             f">> {knl.label} <<" if knl == self.active_kernel else knl.label
-            #         )
-            #         dec = "╰──  " if k == len(self.all_sub_kernels) - 1 else "├──  "
-            #         content += f"{dec}{label} [{knl.type}]\n"
-            # case "pwd":
-            #     if self.active_kernel is None:
-            #         content = (
-            #             "No kernel is running. Start one with `!start <kernel_name>`."
-            #         )
-            #     else:
-            #         content = asdict(self.active_kernel)
-            # case "help":
-            #     content = "• !ls : prints living kernels\n• !start <kernel_type> : starts a kernel\n• !restart <kernel_label> : restart a kernel with its label\n• !select <kernel_label> : moves the selected kernel to the one with this label - nexts cells will be executed on this kernel\n• !kernels : list available kernels types"
-            # case "kernels":
-            #     content = self.get_available_kernels
-            # case "history":
-            #     content = await self.get_kernel_history(self.active_kernel.id)
-            case _:
-                error = True
-                content = f"Unknown command {cmd}."
-
-        if error:
+        splitted = code.split(" ", 1)
+        self.logger.debug(splitted)
+        if len(splitted) == 0:
+            self.logger.debug(f"Splitted is empty {splitted}")
             self.send_response(
                 self.iopub_socket,
                 "error",
                 {
                     "ename": "UnknownCommand",
                     "evalue": "Unknown command",
-                    "traceback": [content],
+                    "traceback": ["Could not parse command"],
                 },
             )
             return {
@@ -388,16 +427,77 @@ class SilikBaseKernel(Kernel):
                 "payload": [],
                 "user_expressions": {},
             }
+        cmd_name = splitted[0]
+        if re.fullmatch(r"r\d", cmd_name):
+            num_it = int(cmd_name[1])
+            cmd_name = "r"
+            splitted[0] = "r"
+            splitted[1] = "r " * (num_it - 1) + splitted[1]
 
-        self.send_response(
-            self.iopub_socket,
-            "execute_result",
-            {
+        self.logger.debug(f"Command {cmd_name} | Splitted {splitted}")
+        if cmd_name not in self.all_cmds:
+            self.logger.debug(f"Cmd not found {cmd_name}")
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "UnknownCommand",
+                    "evalue": "Unknown command",
+                    "traceback": ["Could not parse command"],
+                },
+            )
+            return {
+                "status": "error",
                 "execution_count": self.execution_count,
-                "data": {"text/plain": content},
-                "metadata": {},
-            },
-        )
+                "payload": [],
+                "user_expressions": {},
+            }
+        cmd_obj = self.all_cmds[cmd_name]
+        self.logger.debug(f"Cmd obj {cmd_obj}")
+        if cmd_name not in ["run", "r"]:
+            splitted = shlex.split(code)
+            self.logger.debug(f"shlex splitted {splitted}")
+
+        args = cmd_obj.parser.parse(splitted[1:])
+        self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
+        cmd_out = await cmd_obj.handler(args)
+        self.logger.debug(f"here cmd_out {cmd_out}")
+        if cmd_out is None:
+            return {
+                "status": "ok",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }
+        error, output = cmd_out
+
+        if error:
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "UnknownCommand",
+                    "evalue": "Unknown command",
+                    "traceback": [output],
+                },
+            )
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }
+        if cmd_name not in ["r", "run"]:
+            self.send_response(
+                self.iopub_socket,
+                "execute_result",
+                {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": output},
+                    "metadata": {},
+                },
+            )
+
         return {
             "status": "ok",
             "execution_count": self.execution_count,
@@ -416,7 +516,7 @@ class SilikBaseKernel(Kernel):
         try:
             # first checks for mode switch trigger (execution // transfer)
             first_word_trigger = code.split(" ")[0]
-            if first_word_trigger in ["/cmd", "/run"]:
+            if first_word_trigger in ["/cmd", "/cnct"]:
                 self.logger.debug("Detected switch mode trigger")
                 if first_word_trigger == "/cmd":
                     self.mode = "cmd"  # pyright: ignore
@@ -426,7 +526,7 @@ class SilikBaseKernel(Kernel):
                         {
                             "execution_count": self.execution_count,
                             "data": {
-                                "text/plain": f"[{self.kernel_metadata.label}] is in mode {self.mode}. You can create and select kernels. Run help."
+                                "text/plain": "Command mode. You can create and select kernels. Send `help` for the list of commands."
                             },
                             "metadata": {},
                         },
@@ -438,18 +538,19 @@ class SilikBaseKernel(Kernel):
                         "user_expressions": {},
                     }
                 else:
-                    self.mode = "run"
+                    self.mode = "cnct"
                     self.send_response(
                         self.iopub_socket,
                         "execute_result",
                         {
                             "execution_count": self.execution_count,
                             "data": {
-                                "text/plain": f"[{self.kernel_metadata.label}] acts as gateway towards {self.active_kernel}. All cells are executed on this kernel. Run /cmd to exit this mode and select a new kernel."
+                                "text/plain": f"All cells are executed on kernel {self.active_kernel.label} [{self.active_kernel.type}]. Run /cmd to exit this mode and select a new kernel."
                             },
                             "metadata": {},
                         },
                     )
+
                     return {
                         "status": "ok",
                         "execution_count": self.execution_count,
@@ -459,14 +560,14 @@ class SilikBaseKernel(Kernel):
 
             # then either run code, or give it to sub-kernels according to a strategy
             if self.mode == "cmd":
-                self.logger.debug(f"Executing code on {self.kernel_metadata.label}")
+                self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
                 result = await self._do_execute(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
                 return result
-            elif self.mode == "run":
+            elif self.mode == "cnct":
                 self.logger.debug(f"Executing code on {self.active_kernel.label}")
-                result = await self._do_run(
+                result = await self._do_connect(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
                 return result
@@ -487,13 +588,14 @@ class SilikBaseKernel(Kernel):
                     "user_expressions": {},
                 }
         except Exception as e:
+            traceback_list = traceback.format_exc().splitlines()
             self.send_response(
                 self.iopub_socket,
                 "error",
                 {
                     "ename": str(e),
                     "evalue": str(e),
-                    "traceback": [str(e.__traceback__)],
+                    "traceback": traceback_list,
                 },
             )
             return {
@@ -503,22 +605,16 @@ class SilikBaseKernel(Kernel):
                 "user_expressions": {},
             }
 
-    async def _do_run(
+    async def send_code_to_sub_kernel(
         self,
+        sub_kernel: KernelMetadata,
         code,
         silent,
         store_history=True,
         user_expressions=None,
         allow_stdin=False,
     ):
-        """
-        Transfer code to the sub-kernels. And sends the result through
-        IOPubSocket.
-        By default, code is sent to the selected kernel, but this behaviour
-        could be modified.
-        """
-        self.logger.debug(f"Code is sent to selected kernel : {self.active_kernel}")
-        km = self.mkm.get_kernel(self.active_kernel.id)
+        km = self.mkm.get_kernel(sub_kernel.id)
         kc = km.client()
 
         # synchronous call
@@ -540,7 +636,7 @@ class SilikBaseKernel(Kernel):
         )
         kc.shell_channel.send(msg)
         msg_id = msg["header"]["msg_id"]
-        output = []
+        output = {}
 
         while True:
             msg = await kc._async_get_iopub_msg()
@@ -548,59 +644,105 @@ class SilikBaseKernel(Kernel):
                 continue
 
             msg_type = msg["msg_type"]
-
+            self.logger.debug(f"msg from kernel {msg}")
             if msg_type == "execute_result":
-                output = msg["content"]["data"]["text/plain"]
-                break
+                output["execute_result"] = msg["content"]
+            elif msg_type == "stream":
+                output["stream"] = msg["content"]
+            elif msg_type == "display_data":
+                output["display_data"] = msg["content"]
 
             elif msg_type == "error":
-                self.logger.debug(f"Error : {msg}")
-                kc.stop_channels()
-
-                self.send_response(
-                    self.iopub_socket,
-                    "error",
-                    {
-                        "ename": msg["content"]["ename"],
-                        "evalue": msg["content"]["evalue"],
-                        "traceback": msg["content"]["traceback"],
-                    },
-                )
-                return {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }
+                output["error"] = msg["content"]
+                break
 
             elif msg_type == "status" and msg["content"]["execution_state"] == "idle":
                 break
-
+            if "execute_result" in output:
+                break
         # synchronous call
         kc.stop_channels()
+        if "error" in output:
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }, output["error"]
 
-        if not silent and output:
-            self.send_response(
-                self.iopub_socket,
-                "execute_result",
-                {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": output},
-                    "metadata": {},
-                },
+        if sub_kernel.is_branched_to is not None and "execute_result" in output:
+            raw_output = output["execute_result"]["data"]["text/plain"]
+            self.logger.debug(
+                f"Sending output : `{raw_output}` of {sub_kernel.label} to {sub_kernel.is_branched_to.label}"
             )
-
+            res = await self.send_code_to_sub_kernel(
+                sub_kernel=sub_kernel.is_branched_to,
+                code=raw_output,
+                silent=silent,
+            )
+            self.logger.debug(res)
+            return res
         return {
             "status": "ok",
             "execution_count": self.execution_count,
             "payload": [],
             "user_expressions": {},
-        }
+        }, output
+
+    async def _do_connect(
+        self,
+        code,
+        silent,
+        store_history=True,
+        user_expressions=None,
+        allow_stdin=False,
+    ):
+        """
+        Transfer code to the sub-kernels. And sends the result through
+        IOPubSocket.
+        By default, code is sent to the selected kernel, but this behaviour
+        could be modified.
+        """
+        self.logger.debug(f"Code is sent to selected kernel : {self.active_kernel}")
+
+        result, output = await self.send_code_to_sub_kernel(
+            self.active_kernel,
+            code,
+            silent,
+            store_history,
+            user_expressions,
+            allow_stdin,
+        )
+        self.logger.debug(f"Output of cell : {result, output}")
+
+        if result["status"] == "error":
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                output,
+            )
+            return result
+        if result["status"] == "ok":
+            if not silent and output:
+                for each_output_type in output:
+                    self.logger.debug(f"Output type {output[each_output_type]}")
+                    if each_output_type == "execute_result":
+                        output[each_output_type]["data"]["text/plain"] = (
+                            f"{self.active_kernel.label} [{self.active_kernel.type}]\n"
+                            + output[each_output_type]["data"]["text/plain"]
+                        )
+                    self.send_response(
+                        self.iopub_socket,
+                        each_output_type,
+                        output[each_output_type],
+                    )
+
+        return result
 
     def parse_command(self, cell_input: str):
         """
         Parses the text to find a command. A command
-        must start with !.
+        must start with !
         """
         parts = cell_input.split(" ", 1)  # Split the string at the first space
         first_word = parts[0]  # The first word
@@ -612,3 +754,145 @@ class SilikBaseKernel(Kernel):
     def do_shutdown(self, restart):
         self.mkm.shutdown_all()
         return super().do_shutdown(restart)
+
+    # ------------------------------------------------------ #
+    # ----------- COMMANDS HANDLERS AND PARSERS ------------ #
+    # ------------------------------------------------------ #
+
+    async def help_cmd_handler(self, args):
+        doc = {
+            "cd <path>": "Moves the selected kernel in the kernel tree",
+            "ls | tree": "Displays the kernels tree",
+            "mkdir <kernel_type> --label=<kernel_label>": "starts a kernel (see 'kernels' command)",
+            "run <code>": "run code on selected kernel - in one shot",
+            "restart": "restart the selected kernel",
+            "branch <kernel_label>": "branch the output of selected kernel to the input of one of its children. Output of parent kernel is now output of children kernel. (In -> Parent Kernel -> Children Kernel -> Out)",
+            "detach": "detach the branch starting from the selected kernel",
+            "history": "displays the cells input history for this kernel",
+            "kernels": "displays the list of available kernels types",
+            "/cnct": "direct connection towards selected kernel : cells will be directly executed on this kernel; except if cell content is '/cmd'",
+            "/cmd": "switch to command mode (default one) - exit /cnct mode",
+        }
+        content = "Silik Kernel allows to manage a group of kernels.\n\n"
+        content += f"Start by running `mkdir <kernel_type> --label=my-kernel` with <kernel_type> among {self.get_available_kernels}.\n\n"
+        content += "Then, you can run `cd my-kernel` and, `run <code>` to run one shot code in this kernel.\n\n"
+        content += "You can also run /cnct to avoid typing `run`. /cmd allows at any time to go back to command mode (navigation and creation of kernels).\n\n"
+        content += "Here is a quick reminder of available commands : \n\n"
+        for key, value in doc.items():
+            content += f"• {key} : {value}\n"
+
+        return False, content
+
+    async def cd_cmd_handler(self, args):
+        error = False
+        if args.path is None:
+            found_kernel = self.kernel_metadata
+        else:
+            found_kernel = self.find_kernel_metadata_from_path(args.path)
+        if found_kernel is None:
+            error = True
+            content = f"Could not find kernel located at {args.path}"
+            return error, content
+        self.active_kernel = found_kernel
+        content = self.root_node.tree_to_str(self.active_kernel)
+        return error, content
+
+    async def mkdir_cmd_handler(self, args):
+        self.logger.debug(f"mkdir with args {args}")
+        error = False
+        active_node = self.find_node_by_metadata(self.active_kernel)
+        self.logger.debug(active_node)
+        if active_node is None:
+            error = True
+            content = f"Could not find node in the kernel tree with value {self.active_kernel}"
+            return error, content
+        if not args.kernel_type:
+            error = True
+            content = f"Please specify a kernel-type among {self.get_available_kernels}"
+            self.logger.debug(f"{error, content}")
+            return error, content
+
+        new_kernel = await self.start_kernel(
+            args.kernel_type, None if not args.label else args.label
+        )
+        active_node.children.append(KernelTreeNode(new_kernel, parent=active_node))
+        self.all_kernels.append(new_kernel)
+        content = self.root_node.tree_to_str(self.active_kernel)
+        return error, content
+
+    async def ls_cmd_handler(self, args):
+        content = self.root_node.tree_to_str(self.active_kernel)
+        self.logger.debug(f"ls here {content}")
+        return False, content
+
+    async def restart_cmd_handler(self, args):
+        await self.mkm.restart_kernel(self.active_kernel.id)
+        content = f"Restarted kernel {self.active_kernel.label}"
+        return False, content
+
+    async def kernels_cmd_handler(self, args):
+        content = self.get_available_kernels
+        return False, content
+
+    async def history_cmd_handler(self, args):
+        content = await self.get_kernel_history(self.active_kernel.id)
+        return False, content
+
+    async def branch_cmd_handler(self, args):
+        # connects output of selected kernel to one kernel
+        out_kernel = self.get_kernel_from_label(args.kernel_label)
+        if out_kernel is None:
+            error = True
+            content = f"No kernel was found with label `{args.kernel_label}`"
+            return error, content
+
+        active_kernel_node = self.find_node_by_metadata(self.active_kernel)
+        if active_kernel_node is None:
+            error = True
+            content = (
+                f"No kernel was found on tree with label {self.active_kernel.label}."
+            )
+            return error, content
+
+        out_kernel_node = self.find_node_by_metadata(out_kernel)
+        if out_kernel_node is None:
+            error = True
+            content = f"No kernel was found on tree with label {out_kernel.label}."
+            return error, content
+
+        if out_kernel_node not in active_kernel_node.children:
+            error = True
+            content = f"Kernel {out_kernel.label} not in {self.active_kernel.label} childrens. Branching is only available from a parent to a children."
+            return error, content
+
+        self.active_kernel.is_branched_to = out_kernel
+        content = self.root_node.tree_to_str(self.active_kernel)
+        return False, content
+
+    async def detach_cmd_handler(self, args):
+        self.active_kernel.is_branched_to = None
+        content = self.root_node.tree_to_str(self.active_kernel)
+        return False, content
+
+    async def run_cmd_handler(self, args):
+        content = await self._do_connect(args.cmd, silent=False)
+        if content["status"] == "error":
+            return (
+                True,
+                f"[{self.kernel_metadata.label}] - Error during code execution",
+            )
+        return False, content
+
+
+@dataclass
+class SilikCommand:
+    """
+    ! GPT-5 generated !
+    Lightweight command abstraction built on top of argparse.
+
+    A Command binds an ArgumentParser to a handler function, allowing
+    command-like execution without relying on argparse subparsers.
+    """
+
+    handler: Callable
+    parser: SilikCommandParser = SilikCommandParser()
