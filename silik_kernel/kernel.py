@@ -1,6 +1,7 @@
 # Basic python dependencies
 import os
-import traceback
+
+# import traceback
 from uuid import uuid4, UUID
 import re
 from typing import Literal, Optional, Tuple
@@ -19,7 +20,7 @@ from .tools import (
 
 # External dependencies
 from ipykernel.kernelbase import Kernel
-from jupyter_client.multikernelmanager import AsyncMultiKernelManager
+from jupyter_client.multikernelmanager import MultiKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 
 
@@ -62,13 +63,13 @@ class SilikBaseKernel(Kernel):
     language = "no-op"
     language_version = "0.1"
     language_info = {
-        "name": "silik",
+        "name": "python",
         "mimetype": "text/plain",
         "file_extension": ".txt",
     }
     banner = "Silik Kernel - Multikernel Manager - Run `help` for commands"
     all_kernels_labels: list[str] = ALL_KERNELS_LABELS
-    mkm: AsyncMultiKernelManager = AsyncMultiKernelManager()
+    mkm: MultiKernelManager = MultiKernelManager()
     message_history: dict[str, list] = {}  # history of messages
 
     def __init__(self, **kwargs):
@@ -110,7 +111,8 @@ class SilikBaseKernel(Kernel):
             "kernels": SilikCommand(self.kernels_cmd_handler),
             "history": SilikCommand(self.history_cmd_handler),
             "branch": SilikCommand(
-                self.branch_cmd_handler, SilikCommandParser(["kernel_label"])
+                self.branch_cmd_handler,
+                SilikCommandParser(["kernel_label"], ["trust_level"]),
             ),
             "detach": SilikCommand(self.detach_cmd_handler),
             "run": run_cmd,
@@ -126,7 +128,7 @@ class SilikBaseKernel(Kernel):
     # ------------- ipykernel wrapper methods -------------- #
     # ------------------------------------------------------ #
 
-    async def do_execute(  # pyright: ignore
+    def do_execute(  # pyright: ignore
         self,
         code: str,
         silent: bool,
@@ -203,13 +205,13 @@ class SilikBaseKernel(Kernel):
         # then either run code, or give it to sub-kernels
         if self.mode == "cmd":
             self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
-            result = await self.do_execute_on_silik(
+            result = self.do_execute_on_silik(
                 code, silent, store_history, user_expressions, allow_stdin
             )
             return result
         elif self.mode == "cnct":
             self.logger.debug(f"Executing code on {self.active_kernel.label}")
-            result = await self.do_execute_on_sub_kernel(
+            result = self.do_execute_on_sub_kernel(
                 code, silent, store_history, user_expressions, allow_stdin
             )
             return result
@@ -222,7 +224,7 @@ class SilikBaseKernel(Kernel):
                 "user_expressions": {},
             }
 
-    async def do_execute_on_silik(
+    def do_execute_on_silik(
         self,
         code: str,
         silent: bool,
@@ -233,11 +235,11 @@ class SilikBaseKernel(Kernel):
         splitted_code = code.split("\n")
         self.logger.debug(f"Splitted code {splitted_code}")
         if len(splitted_code) == 1:
-            return await self.do_execute_one_line_on_silik(  # pyright: ignore
+            return self.do_execute_one_line_on_silik(  # pyright: ignore
                 code, silent, store_history, user_expressions, allow_stdin
             )
         for line in splitted_code:
-            out = await self.do_execute_one_line_on_silik(
+            out = self.do_execute_one_line_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
             if out["status"] == "error":
@@ -249,7 +251,7 @@ class SilikBaseKernel(Kernel):
             "user_expressions": {},
         }
 
-    async def do_execute_one_line_on_silik(
+    def do_execute_one_line_on_silik(
         self,
         code: str,
         silent: bool,
@@ -332,7 +334,7 @@ class SilikBaseKernel(Kernel):
 
         args = cmd_obj.parser.parse(splitted[1:])
         self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
-        cmd_out = await cmd_obj.handler(args)
+        cmd_out = cmd_obj.handler(args)
         self.logger.debug(f"here cmd_out {cmd_out}")
         if cmd_out is None:
             return {
@@ -377,7 +379,7 @@ class SilikBaseKernel(Kernel):
             "user_expressions": {},
         }
 
-    async def do_execute_on_sub_kernel(
+    def do_execute_on_sub_kernel(
         self,
         code: str,
         silent: bool,
@@ -405,7 +407,7 @@ class SilikBaseKernel(Kernel):
         """
         self.logger.debug(f"Code is sent to selected kernel : {self.active_kernel}")
 
-        result, output = await self.send_code_to_sub_kernel(
+        result, output = self.send_code_to_sub_kernel(
             self.active_kernel,
             code,
             silent,
@@ -436,27 +438,107 @@ class SilikBaseKernel(Kernel):
 
     def do_is_complete(self, code: str):
         if self.mode == "cnct":
-            # TODO : fetch sub kernel completion (hard)
-            return {"status": "complete"}
+            km = self.mkm.get_kernel(self.active_kernel.id)
+            self.logger.debug(f"Sending is_complete to {self.active_kernel}")
+            kc = km.client()
+            kc.start_channels()
+            msg = kc.session.msg(
+                "is_complete_request",
+                {
+                    "code": code,
+                },
+            )
+            kc.shell_channel.send(msg)
+            msg_id = msg["header"]["msg_id"]
+            output = {}
+
+            while True:
+                msg = kc.get_shell_msg()
+                if msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+
+                msg_type = msg["msg_type"]
+
+                if msg_type == "is_complete_reply":
+                    output = msg["content"]
+                    break
+
+                elif msg_type == "error":
+                    output = msg["content"]
+                    break
+            self.logger.debug(f"is complete from {self.active_kernel.label}: {output}")
+            kc.stop_channels()
+            if len(output) == 0:
+                return {"status": "unknown"}
+            return output
         if code.endswith(" "):
             return {"status": "incomplete", "indent": ""}
         return {"status": "unknown"}
+
+    def do_complete(self, code: str, cursor: int):
+        if self.mode == "cnct":
+            # just act as a gateway towards active kernel
+            km = self.mkm.get_kernel(self.active_kernel.id)
+            self.logger.debug(f"Sending do_complete to {self.active_kernel}")
+            kc = km.client()
+            kc.start_channels()
+            msg_type = "complete_request"
+
+            msg = kc.session.msg(
+                "complete_request",
+                {"code": code, "cursor_pos": cursor},
+            )
+            kc.shell_channel.send(msg)
+            msg_id = msg["header"]["msg_id"]
+            output = {}
+
+            while True:
+                msg = kc.get_shell_msg()
+                if msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+
+                msg_type = msg["msg_type"]
+
+                if msg_type == "complete_reply":
+                    output = msg["content"]
+                    break
+
+                elif msg_type == "error":
+                    output = msg["content"]
+                    break
+            self.logger.debug(f"do complete from {self.active_kernel.label}: {output}")
+            kc.stop_channels()
+            if len(output) > 0:
+                return output
+        return {
+            # status should be 'ok' unless an exception was raised during the request,
+            # in which case it should be 'error', along with the usual error message content
+            # in other messages.
+            "status": "ok",
+            # The list of all matches to the completion request, such as
+            # ['a.isalnum', 'a.isalpha'] for the above example.
+            "matches": [],
+            # The range of text that should be replaced by the above matches when a completion is accepted.
+            # typically cursor_end is the same as cursor_pos in the request.
+            "cursor_start": cursor,
+            "cursor_end": cursor,
+            # Information that frontend plugins might use for extra display information about completions.
+            "metadata": {},
+        }
 
     def do_shutdown(self, restart: bool):
         """
         Shutdown the kernel by simply shutting down all sub kernels
         started.
         """
-
         self.mkm.shutdown_all()
-        # TODO: mkm shutdown is async, but here it is sync method
         return {"status": "ok", "restart": restart}
 
     # ------------------------------------------------------ #
     # ------------- tools for executing code --------------- #
     # ------------------------------------------------------ #
 
-    async def get_kernel_history(self, kernel_id: UUID | str) -> list:
+    def get_kernel_history(self, kernel_id: UUID | str) -> list:
         """
         Returns the history of the kernel with kernel_id. Not all kernels
         store their history. See https://jupyter-client.readthedocs.io/en/stable/messaging.html#msging-history
@@ -495,7 +577,7 @@ class SilikBaseKernel(Kernel):
 
             # Wait for reply
             while True:
-                msg = await kc._async_get_shell_msg()
+                msg = kc.get_shell_msg()
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
@@ -616,7 +698,7 @@ class SilikBaseKernel(Kernel):
 
         return current_node.value  # Return the KernelMetadata of the found node
 
-    async def start_kernel(
+    def start_kernel(
         self, kernel_name: str, kernel_label: str | None = None
     ) -> KernelMetadata | None:
         """
@@ -652,13 +734,13 @@ class SilikBaseKernel(Kernel):
             self.logger.debug("Existing label")
             return
         new_kernel = KernelMetadata(label=kernel_label, type=kernel_name, id=kernel_id)
-        await self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
+        self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.given_labels.append(kernel_label)
         self.logger.debug(f"Successfully started kernel {new_kernel}")
         self.logger.debug(f"No kernel with label {kernel_name} is available.")
         return new_kernel
 
-    async def send_code_to_sub_kernel(
+    def send_code_to_sub_kernel(
         self,
         sub_kernel: KernelMetadata,
         code: str,
@@ -727,7 +809,7 @@ class SilikBaseKernel(Kernel):
         output = {}
 
         while True:
-            msg = await kc._async_get_iopub_msg()
+            msg = kc.get_iopub_msg()
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
 
@@ -764,7 +846,7 @@ class SilikBaseKernel(Kernel):
             self.logger.debug(
                 f"Sending output : `{raw_output}` of {sub_kernel.label} to {sub_kernel.is_branched_to.label}"
             )
-            res = await self.send_code_to_sub_kernel(
+            res = self.send_code_to_sub_kernel(
                 sub_kernel=sub_kernel.is_branched_to,
                 code=raw_output,
                 silent=silent,
@@ -782,7 +864,7 @@ class SilikBaseKernel(Kernel):
     # ----------------- COMMANDS HANDLERS ------------------ #
     # ------------------------------------------------------ #
 
-    async def help_cmd_handler(self, args):
+    def help_cmd_handler(self, args):
         doc = {
             "cd <path>": "Moves the selected kernel in the kernel tree",
             "ls | tree": "Displays the kernels tree",
@@ -806,7 +888,7 @@ class SilikBaseKernel(Kernel):
 
         return False, content
 
-    async def cd_cmd_handler(self, args):
+    def cd_cmd_handler(self, args):
         error = False
         if args.path is None or not args.path:
             found_kernel = self.kernel_metadata
@@ -820,7 +902,7 @@ class SilikBaseKernel(Kernel):
         content = self.root_node.tree_to_str(self.active_kernel)
         return error, content
 
-    async def mkdir_cmd_handler(self, args):
+    def mkdir_cmd_handler(self, args):
         self.logger.debug(f"mkdir with args {args}")
         error = False
         active_node = self.find_node_by_metadata(self.active_kernel)
@@ -835,7 +917,7 @@ class SilikBaseKernel(Kernel):
             self.logger.debug(f"{error, content}")
             return error, content
 
-        new_kernel = await self.start_kernel(
+        new_kernel = self.start_kernel(
             args.kernel_type, None if not args.label else args.label
         )
         if new_kernel is None:
@@ -845,25 +927,25 @@ class SilikBaseKernel(Kernel):
         content = self.root_node.tree_to_str(self.active_kernel)
         return error, content
 
-    async def ls_cmd_handler(self, args):
+    def ls_cmd_handler(self, args):
         content = self.root_node.tree_to_str(self.active_kernel)
         self.logger.debug(f"ls here {content}")
         return False, content
 
-    async def restart_cmd_handler(self, args):
-        await self.mkm.restart_kernel(self.active_kernel.id)
+    def restart_cmd_handler(self, args):
+        self.mkm.restart_kernel(self.active_kernel.id)
         content = f"Restarted kernel {self.active_kernel.label}"
         return False, content
 
-    async def kernels_cmd_handler(self, args):
+    def kernels_cmd_handler(self, args):
         content = self.get_available_kernels
         return False, content
 
-    async def history_cmd_handler(self, args):
-        content = await self.get_kernel_history(self.active_kernel.id)
+    def history_cmd_handler(self, args):
+        content = self.get_kernel_history(self.active_kernel.id)
         return False, content
 
-    async def branch_cmd_handler(self, args):
+    def branch_cmd_handler(self, args):
         # connects output of selected kernel to one kernel
         out_kernel = self.get_kernel_from_label(args.kernel_label)
         if out_kernel is None:
@@ -891,16 +973,22 @@ class SilikBaseKernel(Kernel):
             return error, content
 
         self.active_kernel.is_branched_to = out_kernel
+
+        trust_level = 0
+        if args.trust_level in ["0", "1", "2", 0, 1, 2]:
+            trust_level = int(args.trust_level)
+
+        self.active_kernel.branch_trust_level = trust_level  # pyright: ignore
         content = self.root_node.tree_to_str(self.active_kernel)
         return False, content
 
-    async def detach_cmd_handler(self, args):
+    def detach_cmd_handler(self, args):
         self.active_kernel.is_branched_to = None
         content = self.root_node.tree_to_str(self.active_kernel)
         return False, content
 
-    async def run_cmd_handler(self, args):
-        content = await self.do_execute_on_sub_kernel(args.cmd, silent=False)
+    def run_cmd_handler(self, args):
+        content = self.do_execute_on_sub_kernel(args.cmd, silent=False)
         if content["status"] == "error":
             return (
                 True,
@@ -908,5 +996,5 @@ class SilikBaseKernel(Kernel):
             )
         return False, content
 
-    async def exit_cmd_handler(self, args):
+    def exit_cmd_handler(self, args):
         return True, "Not implemented"

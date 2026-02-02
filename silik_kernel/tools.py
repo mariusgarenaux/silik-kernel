@@ -77,6 +77,10 @@ class KernelMetadata:
     type: str
     id: str
     is_branched_to: "KernelMetadata | None" = None
+    branch_trust_level: Literal[0, 1, 2] = 0  # trust level of branched kernel
+    # 0 = no trust, each cell is asked for validation before being sent to the sub kernel
+    # 1 = trust but watch, each cell is displayed to the user but is still automatically sent to the sub kernel
+    # 2 = full trust, each cell is automatically sent to the sub-kernel, and not sent to the user
     sandbox: dict = field(default_factory=dict)
 
 
