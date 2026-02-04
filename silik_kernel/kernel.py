@@ -1,7 +1,7 @@
 # Basic python dependencies
 import os
 
-# import traceback
+import traceback
 from uuid import uuid4, UUID
 import re
 from typing import Literal, Optional, Tuple
@@ -63,7 +63,7 @@ class SilikBaseKernel(Kernel):
     language = "no-op"
     language_version = "0.1"
     language_info = {
-        "name": "python",
+        "name": "silik",
         "mimetype": "text/plain",
         "file_extension": ".txt",
     }
@@ -159,64 +159,81 @@ class SilikBaseKernel(Kernel):
         """
 
         # first checks for mode switch trigger (command // connect)
-        first_word_trigger = code.split(" ")[0]
-        if first_word_trigger in ["/cmd", "/cnct"]:
-            self.logger.debug("Detected switch mode trigger")
-            if first_word_trigger == "/cmd":
-                self.mode = "cmd"
-                self.send_response(
-                    self.iopub_socket,
-                    "execute_result",
-                    {
-                        "execution_count": self.execution_count,
-                        "data": {
-                            "text/plain": "Command mode. You can create and select kernels. Send `help` for the list of commands."
+        try:
+            first_word_trigger = code.split(" ")[0]
+            if first_word_trigger in ["/cmd", "/cnct"]:
+                self.logger.debug("Detected switch mode trigger")
+                if first_word_trigger == "/cmd":
+                    self.mode = "cmd"
+                    self.send_response(
+                        self.iopub_socket,
+                        "execute_result",
+                        {
+                            "execution_count": self.execution_count,
+                            "data": {
+                                "text/plain": "Command mode. You can create and select kernels. Send `help` for the list of commands."
+                            },
+                            "metadata": {},
                         },
-                        "metadata": {},
-                    },
+                    )
+                    return {
+                        "status": "ok",
+                        "execution_count": self.execution_count,
+                        "payload": [],
+                        "user_expressions": {},
+                    }
+                else:
+                    self.mode = "cnct"
+                    self.send_response(
+                        self.iopub_socket,
+                        "execute_result",
+                        {
+                            "execution_count": self.execution_count,
+                            "data": {
+                                "text/plain": f"All cells are executed on kernel {self.active_kernel.label} [{self.active_kernel.type}]. Run /cmd to exit this mode and select a new kernel."
+                            },
+                            "metadata": {},
+                        },
+                    )
+
+                    return {
+                        "status": "ok",
+                        "execution_count": self.execution_count,
+                        "payload": [],
+                        "user_expressions": {},
+                    }
+
+            # then either run code, or give it to sub-kernels
+            if self.mode == "cmd":
+                self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
+                result = self.do_execute_on_silik(
+                    code, silent, store_history, user_expressions, allow_stdin
                 )
-                return {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }
+                return result
+            elif self.mode == "cnct":
+                self.logger.debug(f"Executing code on {self.active_kernel.label}")
+                result = self.do_execute_on_sub_kernel(
+                    code, silent, store_history, user_expressions, allow_stdin
+                )
+                return result
             else:
-                self.mode = "cnct"
-                self.send_response(
-                    self.iopub_socket,
-                    "execute_result",
-                    {
-                        "execution_count": self.execution_count,
-                        "data": {
-                            "text/plain": f"All cells are executed on kernel {self.active_kernel.label} [{self.active_kernel.type}]. Run /cmd to exit this mode and select a new kernel."
-                        },
-                        "metadata": {},
-                    },
-                )
-
+                self.mode = "cmd"
                 return {
-                    "status": "ok",
+                    "status": "error",
                     "execution_count": self.execution_count,
                     "payload": [],
                     "user_expressions": {},
                 }
-
-        # then either run code, or give it to sub-kernels
-        if self.mode == "cmd":
-            self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
-            result = self.do_execute_on_silik(
-                code, silent, store_history, user_expressions, allow_stdin
+        except Exception as e:
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "",
+                    "evalue": "",
+                    "traceback": traceback.format_exception(e),
+                },
             )
-            return result
-        elif self.mode == "cnct":
-            self.logger.debug(f"Executing code on {self.active_kernel.label}")
-            result = self.do_execute_on_sub_kernel(
-                code, silent, store_history, user_expressions, allow_stdin
-            )
-            return result
-        else:
-            self.mode = "cmd"
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
@@ -475,7 +492,7 @@ class SilikBaseKernel(Kernel):
             return {"status": "incomplete", "indent": ""}
         return {"status": "unknown"}
 
-    def do_complete(self, code: str, cursor: int):
+    def do_complete(self, code: str, cursor_pos: int):
         if self.mode == "cnct":
             # just act as a gateway towards active kernel
             km = self.mkm.get_kernel(self.active_kernel.id)
@@ -486,7 +503,7 @@ class SilikBaseKernel(Kernel):
 
             msg = kc.session.msg(
                 "complete_request",
-                {"code": code, "cursor_pos": cursor},
+                {"code": code, "cursor_pos": cursor_pos},
             )
             kc.shell_channel.send(msg)
             msg_id = msg["header"]["msg_id"]
@@ -520,8 +537,8 @@ class SilikBaseKernel(Kernel):
             "matches": [],
             # The range of text that should be replaced by the above matches when a completion is accepted.
             # typically cursor_end is the same as cursor_pos in the request.
-            "cursor_start": cursor,
-            "cursor_end": cursor,
+            "cursor_start": cursor_pos,
+            "cursor_end": cursor_pos,
             # Information that frontend plugins might use for extra display information about completions.
             "metadata": {},
         }
@@ -595,7 +612,7 @@ class SilikBaseKernel(Kernel):
         Same as running in a terminal `jupyter kernelspec list`
         """
         specs = self.ksm.find_kernel_specs()
-        return list(specs.keys())
+        return list[str](specs.keys())
 
     def get_kernel_from_label(self, kernel_label: str) -> KernelMetadata | None:
         """
@@ -997,4 +1014,5 @@ class SilikBaseKernel(Kernel):
         return False, content
 
     def exit_cmd_handler(self, args):
+        print(1 / 0)
         return True, "Not implemented"
