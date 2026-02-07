@@ -203,3 +203,6 @@ class SilikCommandParser:
 class SilikCommand:
     handler: Callable
     parser: SilikCommandParser = SilikCommandParser()
+    helper: Callable = (
+        lambda: None
+    )  # function that takes a raw string as input, and complete it (for tab completion)

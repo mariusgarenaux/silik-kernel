@@ -44,7 +44,7 @@ To use diverse kernels through silik, you can install some example kernels : [ht
 
 ### Tuto
 
-Start by running `mkdir <kernel_type> --label=my-kernel` with <kernel_type> among ['code-helper', 'python3', 'pydantic_ai', 'silik', 'rudi', 'ir', 'test_kernel'].
+Start by running `mkdir <kernel_type> --label=my-kernel` with <kernel_type> among the installed kernels (send `kernels` to see which ones).
 
 Then, you can run `cd my-kernel` and, `run <code>` to run one shot code in this kernel.
 

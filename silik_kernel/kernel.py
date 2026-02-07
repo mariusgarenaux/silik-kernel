@@ -43,7 +43,7 @@ class SilikBaseKernel(Kernel):
 
     The silik-kernel makes basic operations to properly start and
     stop sub-kernels, as well as providing helper functions to distribute
-    code to sub-kernels.
+    code to sub-kernels through appropriate jupyter kernel channels.
 
     You can subclass this kernel in order to define custom strategies
     for :
@@ -493,6 +493,13 @@ class SilikBaseKernel(Kernel):
         return {"status": "unknown"}
 
     def do_complete(self, code: str, cursor_pos: int):
+        """
+        Tab completion. Two modes :
+            - cnct : gateway towards tab completion of sub kernel
+            - cmd : complete command names from self.all_cmds. TODO :
+                implement tab completion for each command args and
+                return it.
+        """
         if self.mode == "cnct":
             # just act as a gateway towards active kernel
             km = self.mkm.get_kernel(self.active_kernel.id)
@@ -527,6 +534,28 @@ class SilikBaseKernel(Kernel):
             kc.stop_channels()
             if len(output) > 0:
                 return output
+        if self.mode == "cmd":
+            splitted = code.split(" ")
+            self.logger.debug(f"do complete , splitted = {splitted}")
+            if len(splitted) == 0:
+                return {
+                    "status": "ok",
+                    "matches": [],
+                    "cursor_start": cursor_pos,
+                    "cursor_end": cursor_pos,
+                    "metadata": {},
+                }
+            if len(splitted) == 1:
+                return self.complete_first_word(splitted, cursor_pos)
+            if splitted[0] not in self.all_cmds:
+                return {
+                    "status": "ok",
+                    "matches": [],
+                    "cursor_start": cursor_pos,
+                    "cursor_end": cursor_pos,
+                    "metadata": {},
+                }
+
         return {
             # status should be 'ok' unless an exception was raised during the request,
             # in which case it should be 'error', along with the usual error message content
@@ -554,6 +583,32 @@ class SilikBaseKernel(Kernel):
     # ------------------------------------------------------ #
     # ------------- tools for executing code --------------- #
     # ------------------------------------------------------ #
+
+    def complete_first_word(self, splitted_code: list[str], cursor_pos: int):
+        first_word = splitted_code[0]
+        all_matches = []
+        for each_cmd in self.all_cmds:
+            if len(each_cmd) < len(first_word):
+                continue
+            potential_match = each_cmd[: len(first_word)]
+            self.logger.debug(f"potential match : {potential_match}, {each_cmd}")
+            if potential_match == first_word:
+                all_matches.append(each_cmd)
+        return {
+            # status should be 'ok' unless an exception was raised during the request,
+            # in which case it should be 'error', along with the usual error message content
+            # in other messages.
+            "status": "ok",
+            # The list of all matches to the completion request, such as
+            # ['a.isalnum', 'a.isalpha'] for the above example.
+            "matches": all_matches,
+            # The range of text that should be replaced by the above matches when a completion is accepted.
+            # typically cursor_end is the same as cursor_pos in the request.
+            "cursor_start": cursor_pos - len(first_word),
+            "cursor_end": cursor_pos,
+            # Information that frontend plugins might use for extra display information about completions.
+            "metadata": {},
+        }
 
     def get_kernel_history(self, kernel_id: UUID | str) -> list:
         """
