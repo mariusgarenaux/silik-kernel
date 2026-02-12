@@ -516,7 +516,7 @@ class SilikBaseKernel(Kernel):
                 if len(output) > 0:
                     return output
             if self.mode == "cmd":
-                splitted = code.split()
+                splitted = code.split(" ")
                 self.logger.debug(f"do complete , splitted = {splitted}")
                 if len(splitted) == 0:
                     return {
@@ -538,9 +538,7 @@ class SilikBaseKernel(Kernel):
                     all_matches = self.all_cmds[cmd_name].parser.do_complete(
                         word_to_complete
                     )
-                    self.logger.debug(
-                        f"Completing command {cmd_name} | {word_to_complete}"
-                    )
+
                     return {
                         "status": "ok",
                         "matches": all_matches,
@@ -582,6 +580,7 @@ class SilikBaseKernel(Kernel):
                     "traceback": traceback.format_exception(e),
                 },
             )
+            self.logger.warning(traceback.format_exception(e))
             return {
                 # status should be 'ok' unless an exception was raised during the request,
                 # in which case it should be 'error', along with the usual error message content
@@ -1114,10 +1113,15 @@ class SilikBaseKernel(Kernel):
             ['python3', 'python']
         """
         all_matches = []
+        self.logger.debug(f"heeere {self.get_available_kernels}")
         for each_kernel in self.get_available_kernels:
+            self.logger.debug(f"each kernel {each_kernel}")
             if len(each_kernel) < len(word):
                 continue
             potential_match = each_kernel[: len(word)]
+            self.logger.debug(
+                f"here potential match {potential_match}, len {len(word)}"
+            )
             if potential_match == word:
                 all_matches.append(each_kernel)
         return all_matches
