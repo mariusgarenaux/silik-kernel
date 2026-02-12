@@ -1164,6 +1164,20 @@ class SilikBaseKernel(Kernel):
                 all_matches.append("/".join(path_components + [each_child.value.label]))
         return all_matches
 
+    def complete_child_label(self, child_name: str):
+        current_node = self.find_node_by_metadata(self.active_kernel)
+        if current_node is None:
+            return []
+        childrens = current_node.children
+        all_matches = []
+        for each_child in childrens:
+            if len(each_child.value.label) < len(child_name):
+                continue
+            potential_match = each_child.value.label[: len(child_name)]
+            if potential_match == child_name:
+                all_matches.append(each_child.value.label)
+        return all_matches
+
     def init_commands(self):
         """
         Define all commands of silik programming language.
@@ -1196,7 +1210,9 @@ class SilikBaseKernel(Kernel):
         history_cmd = SilikCommand(self.history_cmd_handler, history_parser)
 
         branch_parser = KomandParser()
-        branch_parser.add_argument("kernel_label", label="kernel_label")
+        branch_parser.add_argument(
+            "kernel_label", label="kernel_label", completer=self.complete_child_label
+        )
         branch_parser.add_argument("--trust", "-t", label="trust_level")
         branch_cmd = SilikCommand(self.branch_cmd_handler, branch_parser)
 
