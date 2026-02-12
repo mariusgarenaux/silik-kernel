@@ -1,6 +1,5 @@
 # Basic python dependencies
 import os
-
 import traceback
 from uuid import uuid4, UUID
 import re
@@ -15,13 +14,13 @@ from .tools import (
     KernelMetadata,
     KernelTreeNode,
     SilikCommand,
-    SilikCommandParser,
 )
 
 # External dependencies
 from ipykernel.kernelbase import Kernel
 from jupyter_client.multikernelmanager import MultiKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
+from statikomand import KomandParser
 
 
 class SilikBaseKernel(Kernel):
@@ -98,30 +97,8 @@ class SilikBaseKernel(Kernel):
         )  # stores the tree of all kernels
         self.all_kernels: list[KernelMetadata] = []
 
-        ls_cmd = SilikCommand(self.ls_cmd_handler)
-        run_cmd = SilikCommand(self.run_cmd_handler, SilikCommandParser(["cmd"]))
-        self.all_cmds: dict[str, SilikCommand] = {
-            "cd": SilikCommand(self.cd_cmd_handler, SilikCommandParser(["path"])),
-            "mkdir": SilikCommand(
-                self.mkdir_cmd_handler, SilikCommandParser(["kernel_type"], ["label"])
-            ),
-            "ls": ls_cmd,
-            "tree": ls_cmd,
-            "restart": SilikCommand(self.restart_cmd_handler),
-            "kernels": SilikCommand(self.kernels_cmd_handler),
-            "history": SilikCommand(self.history_cmd_handler),
-            "branch": SilikCommand(
-                self.branch_cmd_handler,
-                SilikCommandParser(["kernel_label"], ["trust_level"]),
-            ),
-            "detach": SilikCommand(self.detach_cmd_handler),
-            "run": run_cmd,
-            "r": run_cmd,
-            "help": SilikCommand(self.help_cmd_handler),
-            "exit": SilikCommand(
-                self.exit_cmd_handler, SilikCommandParser(flags=["restart"])
-            ),
-        }
+        self.init_commands()
+
         self.given_labels = [self.kernel_metadata.label]
 
     # ------------------------------------------------------ #
@@ -349,7 +326,8 @@ class SilikBaseKernel(Kernel):
             splitted = shlex.split(code)
             self.logger.debug(f"shlex splitted {splitted}")
 
-        args = cmd_obj.parser.parse(splitted[1:])
+        args = cmd_obj.parser.parse(code.removeprefix(cmd_name))
+        self.logger.debug(f"code without prefix {code.removeprefix(cmd_name)}")
         self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
         cmd_out = cmd_obj.handler(args)
         self.logger.debug(f"here cmd_out {cmd_out}")
@@ -500,77 +478,125 @@ class SilikBaseKernel(Kernel):
                 implement tab completion for each command args and
                 return it.
         """
-        if self.mode == "cnct":
-            # just act as a gateway towards active kernel
-            km = self.mkm.get_kernel(self.active_kernel.id)
-            self.logger.debug(f"Sending do_complete to {self.active_kernel}")
-            kc = km.client()
-            kc.start_channels()
-            msg_type = "complete_request"
+        try:
+            if self.mode == "cnct":
+                # just act as a gateway towards active kernel
+                km = self.mkm.get_kernel(self.active_kernel.id)
+                self.logger.debug(f"Sending do_complete to {self.active_kernel}")
+                kc = km.client()
+                kc.start_channels()
+                msg_type = "complete_request"
 
-            msg = kc.session.msg(
-                "complete_request",
-                {"code": code, "cursor_pos": cursor_pos},
+                msg = kc.session.msg(
+                    "complete_request",
+                    {"code": code, "cursor_pos": cursor_pos},
+                )
+                kc.shell_channel.send(msg)
+                msg_id = msg["header"]["msg_id"]
+                output = {}
+
+                while True:
+                    msg = kc.get_shell_msg()
+                    if msg["parent_header"].get("msg_id") != msg_id:
+                        continue
+
+                    msg_type = msg["msg_type"]
+
+                    if msg_type == "complete_reply":
+                        output = msg["content"]
+                        break
+
+                    elif msg_type == "error":
+                        output = msg["content"]
+                        break
+                self.logger.debug(
+                    f"do complete from {self.active_kernel.label}: {output}"
+                )
+                kc.stop_channels()
+                if len(output) > 0:
+                    return output
+            if self.mode == "cmd":
+                splitted = code.split()
+                self.logger.debug(f"do complete , splitted = {splitted}")
+                if len(splitted) == 0:
+                    return {
+                        "status": "ok",
+                        "matches": [],
+                        "cursor_start": cursor_pos,
+                        "cursor_end": cursor_pos,
+                        "metadata": {},
+                    }
+                if len(splitted) == 1:
+                    return self.complete_first_word(splitted, cursor_pos)
+
+                if splitted[0] in self.all_cmds:
+                    cmd_name = splitted[0]
+                    word_to_complete = splitted[-1]
+                    self.logger.debug(
+                        f"Completing command {cmd_name} | {word_to_complete}"
+                    )
+                    all_matches = self.all_cmds[cmd_name].parser.do_complete(
+                        word_to_complete
+                    )
+                    self.logger.debug(
+                        f"Completing command {cmd_name} | {word_to_complete}"
+                    )
+                    return {
+                        "status": "ok",
+                        "matches": all_matches,
+                        "cursor_start": cursor_pos - len(word_to_complete),
+                        "cursor_end": cursor_pos,
+                        "metadata": {},
+                    }
+                if splitted[0] not in self.all_cmds:
+                    return {
+                        "status": "ok",
+                        "matches": [],
+                        "cursor_start": cursor_pos,
+                        "cursor_end": cursor_pos,
+                        "metadata": {},
+                    }
+
+            return {
+                # status should be 'ok' unless an exception was raised during the request,
+                # in which case it should be 'error', along with the usual error message content
+                # in other messages.
+                "status": "ok",
+                # The list of all matches to the completion request, such as
+                # ['a.isalnum', 'a.isalpha'] for the above example.
+                "matches": [],
+                # The range of text that should be replaced by the above matches when a completion is accepted.
+                # typically cursor_end is the same as cursor_pos in the request.
+                "cursor_start": cursor_pos,
+                "cursor_end": cursor_pos,
+                # Information that frontend plugins might use for extra display information about completions.
+                "metadata": {},
+            }
+        except Exception as e:
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "",
+                    "evalue": "",
+                    "traceback": traceback.format_exception(e),
+                },
             )
-            kc.shell_channel.send(msg)
-            msg_id = msg["header"]["msg_id"]
-            output = {}
-
-            while True:
-                msg = kc.get_shell_msg()
-                if msg["parent_header"].get("msg_id") != msg_id:
-                    continue
-
-                msg_type = msg["msg_type"]
-
-                if msg_type == "complete_reply":
-                    output = msg["content"]
-                    break
-
-                elif msg_type == "error":
-                    output = msg["content"]
-                    break
-            self.logger.debug(f"do complete from {self.active_kernel.label}: {output}")
-            kc.stop_channels()
-            if len(output) > 0:
-                return output
-        if self.mode == "cmd":
-            splitted = code.split(" ")
-            self.logger.debug(f"do complete , splitted = {splitted}")
-            if len(splitted) == 0:
-                return {
-                    "status": "ok",
-                    "matches": [],
-                    "cursor_start": cursor_pos,
-                    "cursor_end": cursor_pos,
-                    "metadata": {},
-                }
-            if len(splitted) == 1:
-                return self.complete_first_word(splitted, cursor_pos)
-            if splitted[0] not in self.all_cmds:
-                return {
-                    "status": "ok",
-                    "matches": [],
-                    "cursor_start": cursor_pos,
-                    "cursor_end": cursor_pos,
-                    "metadata": {},
-                }
-
-        return {
-            # status should be 'ok' unless an exception was raised during the request,
-            # in which case it should be 'error', along with the usual error message content
-            # in other messages.
-            "status": "ok",
-            # The list of all matches to the completion request, such as
-            # ['a.isalnum', 'a.isalpha'] for the above example.
-            "matches": [],
-            # The range of text that should be replaced by the above matches when a completion is accepted.
-            # typically cursor_end is the same as cursor_pos in the request.
-            "cursor_start": cursor_pos,
-            "cursor_end": cursor_pos,
-            # Information that frontend plugins might use for extra display information about completions.
-            "metadata": {},
-        }
+            return {
+                # status should be 'ok' unless an exception was raised during the request,
+                # in which case it should be 'error', along with the usual error message content
+                # in other messages.
+                "status": "error",
+                # The list of all matches to the completion request, such as
+                # ['a.isalnum', 'a.isalpha'] for the above example.
+                "matches": [],
+                # The range of text that should be replaced by the above matches when a completion is accepted.
+                # typically cursor_end is the same as cursor_pos in the request.
+                "cursor_start": cursor_pos,
+                "cursor_end": cursor_pos,
+                # Information that frontend plugins might use for extra display information about completions.
+                "metadata": {},
+            }
 
     def do_shutdown(self, restart: bool):
         """
@@ -1071,3 +1097,131 @@ class SilikBaseKernel(Kernel):
     def exit_cmd_handler(self, args):
         print(1 / 0)
         return True, "Not implemented"
+
+    def complete_kernel_type(self, word: str):
+        """
+        Finds all kernel type that starts like 'word', and
+        return the list of all matching kernel types.
+
+        Parameters :
+        ---
+            - word (str) : the beginning of a kernel type,
+                e.g. 'pyth'
+
+        Returns :
+        ---
+            The list of all matching kernel names, for example
+            ['python3', 'python']
+        """
+        all_matches = []
+        for each_kernel in self.get_available_kernels:
+            if len(each_kernel) < len(word):
+                continue
+            potential_match = each_kernel[: len(word)]
+            if potential_match == word:
+                all_matches.append(each_kernel)
+        return all_matches
+
+    def complete_path(self, path: str):
+        """
+        Completes a path within the kernel tree
+        """
+        self.logger.debug(f"Completing path {path}")
+        path_components = path.split("/")
+        last_elem = path_components[-1]
+        path_components.pop(-1)
+
+        current_node = self.find_node_by_metadata(self.active_kernel)
+        if current_node is None:
+            return
+        self.logger.debug(
+            f"Path components {path_components}, from node {current_node}"
+        )
+        for component in path_components:
+            if component == "..":
+                # Move up to the parent node
+                current_node = (
+                    current_node.parent if current_node.parent else current_node
+                )
+            else:
+                # Find the child node with the corresponding label
+                found = False
+                for child in current_node.children:
+                    if child.value.label == component:
+                        current_node = child
+                        found = True
+                        break
+
+                if not found:
+                    return None  # Return None if the path does not exist
+        childrens = current_node.children
+        all_matches = []
+        for each_child in childrens:
+            if len(each_child.value.label) < len(last_elem):
+                continue
+            potential_match = each_child.value.label[: len(last_elem)]
+            if potential_match == last_elem:
+                all_matches.append("/".join(path_components + [each_child.value.label]))
+        return all_matches
+
+    def init_commands(self):
+        """
+        Define all commands of silik programming language.
+        """
+        cd_parser = KomandParser()
+        cd_parser.add_argument("path", label="path", completer=self.complete_path)
+        cd_cmd = SilikCommand(self.cd_cmd_handler, cd_parser)
+
+        mkdir_parser = KomandParser()
+        mkdir_parser.add_argument(
+            "kernel_type", label="kernel_type", completer=self.complete_kernel_type
+        )
+        mkdir_parser.add_argument("--label", "-l", label="label")
+        mkdir_cmd = SilikCommand(self.mkdir_cmd_handler, mkdir_parser)
+
+        ls_parser = KomandParser()
+        ls_cmd = SilikCommand(self.ls_cmd_handler, ls_parser)
+
+        restart_parser = KomandParser()
+        restart_cmd = SilikCommand(self.restart_cmd_handler, restart_parser)
+
+        run_parser = KomandParser()
+        run_parser.add_argument("cmd", label="cmd")
+        run_cmd = SilikCommand(self.run_cmd_handler, run_parser)
+
+        kernels_parser = KomandParser()
+        kernels_cmd = SilikCommand(self.kernels_cmd_handler, kernels_parser)
+
+        history_parser = KomandParser()
+        history_cmd = SilikCommand(self.history_cmd_handler, history_parser)
+
+        branch_parser = KomandParser()
+        branch_parser.add_argument("kernel_label", label="kernel_label")
+        branch_parser.add_argument("--trust", "-t", label="trust_level")
+        branch_cmd = SilikCommand(self.branch_cmd_handler, branch_parser)
+
+        detach_parser = KomandParser()
+        detach_cmd = SilikCommand(self.detach_cmd_handler, detach_parser)
+
+        help_parser = KomandParser()
+        help_cmd = SilikCommand(self.help_cmd_handler, help_parser)
+
+        exit_parser = KomandParser()
+        exit_parser.add_argument("--restart", label="restart")
+        exit_cmd = SilikCommand(self.exit_cmd_handler, exit_parser)
+
+        self.all_cmds: dict[str, SilikCommand] = {
+            "cd": cd_cmd,
+            "mkdir": mkdir_cmd,
+            "ls": ls_cmd,
+            "tree": ls_cmd,
+            "restart": restart_cmd,
+            "kernels": kernels_cmd,
+            "history": history_cmd,
+            "branch": branch_cmd,
+            "detach": detach_cmd,
+            "run": run_cmd,
+            "r": run_cmd,
+            "help": help_cmd,
+            "exit": exit_cmd,
+        }

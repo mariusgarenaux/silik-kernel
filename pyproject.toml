@@ -14,7 +14,11 @@ authors = [
 ]
 classifiers = ["Programming Language :: Python :: 3"]
 requires-python = ">=3.12"
-dependencies = ["ipykernel>=7.1.0", "jupyter-client>=8.6.3"]
+dependencies = [
+    "ipykernel>=7.1.0",
+    "jupyter-client>=8.6.3",
+    "statikomand>=0.0.2",
+]
 
 [project.urls]
 Repository = "https://github.com/mariusgarenaux/silik-kernel"

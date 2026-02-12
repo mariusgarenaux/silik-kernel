@@ -5,7 +5,7 @@ import random
 from pathlib import Path
 import logging
 from typing import Literal, List, Optional, Callable, TypedDict
-
+from statikomand import KomandParser
 
 ALL_KERNELS_LABELS = [
     "lama",
@@ -202,7 +202,4 @@ class SilikCommandParser:
 @dataclass
 class SilikCommand:
     handler: Callable
-    parser: SilikCommandParser = SilikCommandParser()
-    helper: Callable = (
-        lambda: None
-    )  # function that takes a raw string as input, and complete it (for tab completion)
+    parser: KomandParser
