@@ -529,6 +529,15 @@ class SilikBaseKernel(Kernel):
                 if len(splitted) == 1:
                     return self.complete_first_word(splitted, cursor_pos)
 
+                if cursor_pos != len(code):
+                    return {
+                        "status": "ok",
+                        "matches": [],
+                        "cursor_start": cursor_pos,
+                        "cursor_end": cursor_pos,
+                        "metadata": {},
+                    }
+
                 if splitted[0] in self.all_cmds:
                     cmd_name = splitted[0]
                     word_to_complete = splitted[-1]
@@ -571,15 +580,6 @@ class SilikBaseKernel(Kernel):
                 "metadata": {},
             }
         except Exception as e:
-            self.send_response(
-                self.iopub_socket,
-                "error",
-                {
-                    "ename": "",
-                    "evalue": "",
-                    "traceback": traceback.format_exception(e),
-                },
-            )
             self.logger.warning(traceback.format_exception(e))
             return {
                 # status should be 'ok' unless an exception was raised during the request,
