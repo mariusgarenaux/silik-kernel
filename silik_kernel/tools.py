@@ -46,25 +46,12 @@ def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
     if not logger.handlers:
         fh = logging.FileHandler(log_dir / f"{name}.log", encoding="utf-8")
         fmt = logging.Formatter(
-            f"%(asctime)s | {kernel_id[:5]} | %(levelname)s | %(name)s | %(message)s"
+            f"%(asctime)s | {kernel_id[:5]} | %(levelname)s | %(name)s | %(funcName)s | %(message)s"
         )
         fh.setFormatter(fmt)
         logger.addHandler(fh)
 
     return logger
-
-
-class ExecutionResult(TypedDict):
-    """
-    Standardized execution result of jupyter kernels. Must be returned
-    by do_execute methods of IPykernel wrappers. See :
-    https://jupyter-client.readthedocs.io/en/stable/messaging.html#execution-results
-    """
-
-    status: Literal["ok", "error", "aborted"]
-    execution_count: int
-    payload: list[dict]
-    user_expressions: dict
 
 
 @dataclass

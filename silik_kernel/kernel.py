@@ -1,5 +1,6 @@
 # Basic python dependencies
 import os
+from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
 import re
@@ -10,10 +11,17 @@ import shlex
 from .tools import (
     ALL_KERNELS_LABELS,
     setup_kernel_logger,
-    ExecutionResult,
     KernelMetadata,
     KernelTreeNode,
     SilikCommand,
+)
+
+from .types import (
+    ExecutionResult,
+    IOPubMsg,
+    JupyterMessage,
+    ExecuteRequestContent,
+    ErrorContent,
 )
 
 # External dependencies
@@ -112,7 +120,7 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ):
+    ) -> ExecutionResult:
         """
         Executes code on this kernel, according to 2 modes :
             - command mode (/cmd),
@@ -132,7 +140,7 @@ class SilikBaseKernel(Kernel):
 
         Returns:
         ---
-            ExecutionResult, according to IPykernel documentation.
+            ExecutionResult, according to Jupyter documentation.
         """
 
         # first checks for mode switch trigger (command // connect)
@@ -183,16 +191,53 @@ class SilikBaseKernel(Kernel):
             # then either run code, or give it to sub-kernels
             if self.mode == "cmd":
                 self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
-                result = self.do_execute_on_silik(
+                execution_result, msg = self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
-                return result
+                if execution_result.get("status") == "error":
+                    self.send_response(self.iopub_socket, "error", execution_result)
+                else:
+                    self.send_response(self.iopub_socket, "execute_result", msg)
+                self.logger.debug(f"Output of command : {msg}")
+                return execution_result
             elif self.mode == "cnct":
-                self.logger.debug(f"Executing code on {self.active_kernel.label}")
-                result = self.do_execute_on_sub_kernel(
+                execution_result, msg = self.do_execute_on_sub_kernel(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
-                return result
+
+                if execution_result["status"] == "error":
+                    self.send_response(self.iopub_socket, "error", msg["content"])
+                elif execution_result["status"] == "ok":
+                    if msg["msg_type"] in [
+                        "stream",
+                        "display_data",
+                        "update_display_data",
+                        "execute_input",
+                        "execute_result",
+                        "error",
+                        "clear_output",
+                        "status",
+                    ]:
+                        self.send_response(
+                            self.iopub_socket, msg["msg_type"], msg["content"]
+                        )
+                    else:
+                        error_content: ErrorContent = {
+                            "ename": "NotIOPubMsg",
+                            "evalue": "",
+                            "traceback": [
+                                f"The message from sub-kernel is of type {msg['msg_type']}; which is not known to be sendable through IOPubSocket."
+                            ],
+                        }
+                        self.send_response(self.iopub_socket, "error", error_content)
+                        return {
+                            "execution_count": self.execution_count,
+                            "payload": [],
+                            "status": "error",
+                            "user_expressions": {},
+                        }
+
+                return execution_result
             else:
                 self.mode = "cmd"
                 return {
@@ -206,7 +251,7 @@ class SilikBaseKernel(Kernel):
                 self.iopub_socket,
                 "error",
                 {
-                    "ename": "",
+                    "ename": "SilikExecutionError",
                     "evalue": "",
                     "traceback": traceback.format_exception(e),
                 },
@@ -225,24 +270,183 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> ExecutionResult:
+    ) -> Tuple[ExecutionResult, IOPubMsg]:
+        """
+        Do execute method for "command mode". Runs command on silik kernel.
+        Commands can be multiline commands. Each line itself can be splitted
+        between | for 'bash like' pipes.
+
+        Parameters:
+        ---
+            - code (str) : The code to be executed.
+            - silent (bool) : Whether to display output.
+            - store_history (bool) : Whether to record this code in history and increase
+                 the execution count. If silent is True, this is implicitly False.
+            - user_expressions (dict) : Mapping of names to expressions to evaluate after
+                the code has run. You can ignore this if you need to.
+            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g.
+                for Python’s raw_input()).
+
+        Returns :
+        ---
+            A tuple (ExecutionResult, IOPubMsg). The execution result is the expected output
+            of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
+            is meant to be sent to IOPub Socket.
+        """
         splitted_code = code.split("\n")
         self.logger.debug(f"Splitted code {splitted_code}")
         if len(splitted_code) == 1:
-            return self.do_execute_one_line_on_silik(  # pyright: ignore
+            return self.do_execute_one_line_on_silik(
                 code, silent, store_history, user_expressions, allow_stdin
             )
+        execution_result, msg = None, None
         for line in splitted_code:
-            out = self.do_execute_one_line_on_silik(
+            execution_result, msg = self.do_execute_one_line_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
-            if out["status"] == "error":
-                return out  # pyright: ignore
+            if execution_result.get("status") == "error":
+                return execution_result, msg
+        if execution_result is None or msg is None:
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }, {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": ["Internal Error"],
+            }
+        return execution_result, msg
+
+    def do_execute_one_command_on_silik(
+        self,
+        splitted: list[str],
+        silent: bool,
+        store_history: bool = True,
+        user_expressions: Optional[dict] = None,
+        allow_stdin: bool = False,
+        cmd_stdin: str | None = None,
+    ) -> Tuple[ExecutionResult, IOPubMsg]:
+        """
+        Execute one of command in silik. Do not send result to iopub socket;
+        but returns the message that is meant to be send to iopub socket,
+        as well as the execution result.
+
+        Made to take into account pipes, >, ...
+
+        Parameters :
+        ---
+            - splitted (list[str]) : the list of tokens of the command. Replaces the usual
+                'code' parameter of jupyter do_execute methods.
+            - silent (bool) : Whether to display output.
+            - store_history (bool) : Whether to record this code in history and increase
+                 the execution count. If silent is True, this is implicitly False.
+            - user_expressions (dict) : Mapping of names to expressions to evaluate after
+                the code has run. You can ignore this if you need to.
+            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g.
+                for Python’s raw_input()).
+            - cmd_stdin : None or str. If str, it represent a positional
+                argument that is meant to be given to the command parser.
+
+        Returns :
+        ---
+            A tuple (ExecutionResult, IOPubMsg). The execution result is the expected output
+            of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
+            is meant to be sent to IOPub Socket.
+        """
+        if len(splitted) == 0:
+            self.logger.debug(f"Splitted is empty {splitted}")
+            # self.send_response(
+            #     self.iopub_socket,
+            #     "error"
+            # )
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }, {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": ["Could not parse command"],
+            }
+        cmd_name = splitted[0]
+        self.logger.debug(f"Command {cmd_name} | Splitted {splitted}")
+        if cmd_name not in self.all_cmds:
+            self.logger.debug(f"Cmd not found {cmd_name}")
+
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }, {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": [
+                    f"Command {cmd_name} not found. Available commands : {self.all_cmds.keys()}"
+                ],
+            }
+        cmd_obj = self.all_cmds[cmd_name]
+        self.logger.debug(f"Cmd obj {cmd_obj}")
+        arg_list = splitted[1:]
+        if (
+            cmd_stdin is not None
+        ):  # we check if cmd_stdin need to be added to positionals arguments
+            self.logger.debug(f"arg list{arg_list}")
+            k = 0
+            for each_arg in arg_list:
+                if each_arg[k] == "-":
+                    break
+                k += 1
+            self.logger.debug(f"{k, len(cmd_obj.parser.positionals)}")
+            if k < len(cmd_obj.parser.positionals):
+                arg_list.insert(k, f"'{cmd_stdin}'")
+
+        code = " ".join(arg_list)
+        self.logger.debug(f"Code : {code}")
+        args = cmd_obj.parser.parse(code)
+        self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
+        cmd_out = cmd_obj.handler(args)
+        self.logger.debug(f"here cmd_out {cmd_out}")
+        if cmd_out is None:
+            return (
+                {
+                    "status": "ok",
+                    "execution_count": self.execution_count,
+                    "payload": [],
+                    "user_expressions": {},
+                },
+                {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": ""},
+                    "metadata": {},
+                },
+            )
+        error, output = cmd_out
+
+        if error:
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }, {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": [output],
+            }
+
         return {
             "status": "ok",
             "execution_count": self.execution_count,
             "payload": [],
             "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": output},
+            "metadata": {},
         }
 
     def do_execute_one_line_on_silik(
@@ -252,7 +456,7 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> ExecutionResult:
+    ) -> Tuple[ExecutionResult, IOPubMsg]:
         """
         Executes code on this kernel, without giving it to sub kernels.
         Sends content to IOPub channel. Accepted code contains bash like
@@ -275,104 +479,66 @@ class SilikBaseKernel(Kernel):
             - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
             - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
 
+        Returns :
+        ---
+            A tuple (ExecutionResult, IOPubMsg). The execution result is the expected output
+            of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
+            is meant to be sent to IOPub Socket.
         """
-        splitted = code.split(" ", 1)
-        self.logger.debug(splitted)
-        if len(splitted) == 0:
-            self.logger.debug(f"Splitted is empty {splitted}")
-            self.send_response(
-                self.iopub_socket,
-                "error",
-                {
-                    "ename": "UnknownCommand",
-                    "evalue": "Unknown command",
-                    "traceback": ["Could not parse command"],
-                },
+        lexer = shlex.shlex(code, posix=True, punctuation_chars="|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+        self.logger.debug(tokens)
+
+        # split between pipes
+        commands = []
+        current = []
+        for tok in tokens:
+            if tok == "|":
+                commands.append(current)
+                current = []
+            else:
+                current.append(tok)
+        if current:
+            commands.append(current)
+        self.logger.debug(f"Commands : {commands}")
+
+        cmd_stdin = None
+        execution_result, msg = None, None
+        for each_command in commands:
+            execution_result, msg = self.do_execute_one_command_on_silik(
+                each_command,
+                silent,
+                store_history,
+                user_expressions,
+                allow_stdin,
+                cmd_stdin,
             )
+            if execution_result.get("status") == "error":
+                return execution_result, msg
+
+            self.logger.debug(f"CMD out : {msg}, {execution_result}")
+
+            if execution_result.get("status") == "ok":
+                cmd_stdin = msg.get("data", {}).get("text/plain", None)
+            else:
+                cmd_stdin = None
+
+            self.logger.debug(execution_result, msg)
+            self.logger.debug(f"stdin : {cmd_stdin}")
+        if execution_result is None or msg is None:
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
                 "payload": [],
                 "user_expressions": {},
+            }, {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": ["Silik Internal Error"],
             }
-        cmd_name = splitted[0]
-        if re.fullmatch(r"r\d", cmd_name):
-            num_it = int(cmd_name[1])
-            cmd_name = "r"
-            splitted[0] = "r"
-            splitted[1] = "r " * (num_it - 1) + splitted[1]
 
-        self.logger.debug(f"Command {cmd_name} | Splitted {splitted}")
-        if cmd_name not in self.all_cmds:
-            self.logger.debug(f"Cmd not found {cmd_name}")
-            self.send_response(
-                self.iopub_socket,
-                "error",
-                {
-                    "ename": "UnknownCommand",
-                    "evalue": "Unknown command",
-                    "traceback": ["Could not parse command"],
-                },
-            )
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }
-        cmd_obj = self.all_cmds[cmd_name]
-        self.logger.debug(f"Cmd obj {cmd_obj}")
-        if cmd_name not in ["run", "r"]:
-            splitted = shlex.split(code)
-            self.logger.debug(f"shlex splitted {splitted}")
-
-        args = cmd_obj.parser.parse(code.removeprefix(cmd_name))
-        self.logger.debug(f"code without prefix {code.removeprefix(cmd_name)}")
-        self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
-        cmd_out = cmd_obj.handler(args)
-        self.logger.debug(f"here cmd_out {cmd_out}")
-        if cmd_out is None:
-            return {
-                "status": "ok",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }
-        error, output = cmd_out
-
-        if error:
-            self.send_response(
-                self.iopub_socket,
-                "error",
-                {
-                    "ename": "UnknownCommand",
-                    "evalue": "Unknown command",
-                    "traceback": [output],
-                },
-            )
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }
-        if cmd_name not in ["r", "run"]:
-            self.send_response(
-                self.iopub_socket,
-                "execute_result",
-                {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": output},
-                    "metadata": {},
-                },
-            )
-
-        return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }
+        return execution_result, msg
 
     def do_execute_on_sub_kernel(
         self,
@@ -381,7 +547,7 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> ExecutionResult:
+    ) -> Tuple[ExecutionResult, JupyterMessage]:
         """
         Transfer code to the selected sub-kernel. And sends the content of
         sub-kernel ouput through IOPub channel.
@@ -399,10 +565,15 @@ class SilikBaseKernel(Kernel):
             - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
             - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
 
+        Returns :
+        ---
+            A tuple (ExecutionResult, JupyterMessage). The execution result is the expected output
+            of do_execute method of IPykernel wrapper. The JupyterMessage is the message from
+            the jupyter kernel protocol. Straight from sub-kernel.
         """
         self.logger.debug(f"Code is sent to selected kernel : {self.active_kernel}")
 
-        result, output = self.send_code_to_sub_kernel(
+        execution_result, msg = self.send_code_to_sub_kernel(
             self.active_kernel,
             code,
             silent,
@@ -410,26 +581,23 @@ class SilikBaseKernel(Kernel):
             user_expressions,
             allow_stdin,
         )
-        self.logger.debug(f"Output of cell : {result, output}")
+        self.logger.debug(f"Output of cell : {execution_result, msg}")
 
-        if silent:
-            return result
+        # custom for silent execution : TODO clean display :-)
+        # if silent:
+        #     return execution_result, msg
+        # all_out = []
+        # for each_output_type in msg:
+        #     # sends content to each channel (error, execution result, ...)
+        #     self.logger.debug(f"Output type {msg[each_output_type]}")
+        #     if each_output_type == "execute_result":
+        #         msg[each_output_type]["data"]["text/plain"] = (
+        #             f"{self.active_kernel.label} [{self.active_kernel.type}]\n"
+        #             + msg[each_output_type]["data"]["text/plain"]
+        #         )
+        #     all_out.append(msg[each_output_type])
 
-        for each_output_type in output:
-            # sends content to each channel (error, execution result, ...)
-            self.logger.debug(f"Output type {output[each_output_type]}")
-            if each_output_type == "execute_result":
-                output[each_output_type]["data"]["text/plain"] = (
-                    f"{self.active_kernel.label} [{self.active_kernel.type}]\n"
-                    + output[each_output_type]["data"]["text/plain"]
-                )
-            self.send_response(
-                self.iopub_socket,
-                each_output_type,
-                output[each_output_type],
-            )
-
-        return result
+        return execution_result, msg
 
     def do_is_complete(self, code: str):
         if self.mode == "cnct":
@@ -616,7 +784,6 @@ class SilikBaseKernel(Kernel):
             if len(each_cmd) < len(first_word):
                 continue
             potential_match = each_cmd[: len(first_word)]
-            self.logger.debug(f"potential match : {potential_match}, {each_cmd}")
             if potential_match == first_word:
                 all_matches.append(each_cmd)
         return {
@@ -845,33 +1012,10 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> Tuple[
-        ExecutionResult, dict[Literal["error", "display_data", "execute_result"], dict]
-    ]:
+    ) -> Tuple[ExecutionResult, JupyterMessage]:
         """
-        Send code to sub kernel for execution through shell channel.
-        Code is sent recursively if the sub-kernel is branched to one
-        of its children. Returns a tuple :
-        (execution_result, dict[str, message_content]).
-
-        The keys of the second element are message types (from the IOPub channel),
-        among :
-            - error,
-            - display_data,
-            - execute_result.
-
-        Values are the content of messages of this type, and are directly those of
-        sub-kernel (see https://jupyter-client.readthedocs.io/en/stable/messaging.html)
-        For example, for message type execute_result, the value follows this scheme :
-            content = {
-                'execution_count': int,
-                'data' : dict,
-                'metadata' : dict,
-            }
-
-        The last parameters are those asked by the IPykernel wrapper method
-        do_execute :
-        https://jupyter-client.readthedocs.io/en/stable/wrapperkernels.html#MyKernel.do_execute
+        Send code to sub kernel for execution through shell channel. Opens a client with
+        the kernel, by using MultiKernelManager from JupyterClient.
 
         Parameters
         ---
@@ -879,16 +1023,23 @@ class SilikBaseKernel(Kernel):
             - sub_kernel : A KernelMetadata object describing the sub kernel
             - code (str) : The code to be executed.
             - silent (bool) : Whether to display output.
-            - store_history (bool) : Whether to record this code in history and increase the execution count. If silent is True, this is implicitly False.
-            - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
-            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
+            - store_history (bool) : Whether to record this code in history and increase the
+                execution count. If silent is True, this is implicitly False.
+            - user_expressions (dict) : Mapping of names to expressions to evaluate
+                 after the code has run. You can ignore this if you need to.
+            - allow_stdin (bool) : Whether the frontend can provide input on request
+                 (e.g. for Python’s raw_input()).
 
-
+        Returns :
+        ---
+            A tuple (ExecutionResult, JupyterMessage). First element is the expected
+            output for do_execute method. The JupyterMessage is the message from
+            the jupyter kernel protocol. Straight from sub-kernel.
         """
         km = self.mkm.get_kernel(sub_kernel.id)
         kc = km.client()
         kc.start_channels()
-        content = {
+        content: ExecuteRequestContent = {
             "code": code,
             "silent": silent,
             "store_history": store_history,
@@ -903,59 +1054,71 @@ class SilikBaseKernel(Kernel):
 
         kc.shell_channel.send(msg)
         msg_id = msg["header"]["msg_id"]
-        output = {}
 
         while True:
-            msg = kc.get_iopub_msg()
+            msg: JupyterMessage = (
+                kc.get_iopub_msg()  # pyright: ignore[reportAssignmentType]
+            )
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
 
             msg_type = msg["msg_type"]
-            self.logger.debug(f"msg from kernel {msg}")
-            if msg_type == "execute_result":
-                output["execute_result"] = msg["content"]
-            elif msg_type == "stream":
-                output["stream"] = msg["content"]
-            elif msg_type == "display_data":
-                output["display_data"] = msg["content"]
+            self.logger.debug(f"Message from sub-kernel : `{msg}`")
 
-            elif msg_type == "error":
-                output["error"] = msg["content"]
-                break
+            if msg_type in ["execute_result", "stream", "display_data"]:
+                kc.stop_channels()
+                return {
+                    "status": "ok",
+                    "execution_count": self.execution_count,
+                    "payload": [],
+                    "user_expressions": {},
+                }, msg
 
-            elif msg_type == "status" and msg["content"]["execution_state"] == "idle":
-                break
-            if "execute_result" in output:
-                break
+            if msg_type == "error":
+                kc.stop_channels()
+                return {
+                    "status": "error",
+                    "execution_count": self.execution_count,
+                    "payload": [],
+                    "user_expressions": {},
+                }, msg
 
-        kc.stop_channels()
-        if "error" in output:
-            # we stop recursion if one error is caught
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }, output
+            if msg_type == "status" and msg["content"]["execution_state"] == "idle":
+                kc.stop_channels()
+                return {
+                    "status": "ok",
+                    "execution_count": self.execution_count,
+                    "payload": [],
+                    "user_expressions": {},
+                }, msg
 
-        if sub_kernel.is_branched_to is not None and "execute_result" in output:
-            raw_output = output["execute_result"]["data"]["text/plain"]
-            self.logger.debug(
-                f"Sending output : `{raw_output}` of {sub_kernel.label} to {sub_kernel.is_branched_to.label}"
-            )
-            res = self.send_code_to_sub_kernel(
-                sub_kernel=sub_kernel.is_branched_to,
-                code=raw_output,
-                silent=silent,
-            )
-            self.logger.debug(res)
-            return res
-        return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, output
+        # if sub_kernel.is_branched_to is not None and "execute_result" in output:
+        #     raw_output = output["execute_result"]["data"]["text/plain"]
+        #     self.logger.debug(
+        #         f"Sending output : `{raw_output}` of {sub_kernel.label} to {sub_kernel.is_branched_to.label}"
+        #     )
+        #     res = self.send_code_to_sub_kernel(
+        #         sub_kernel=sub_kernel.is_branched_to,
+        #         code=raw_output,
+        #         silent=silent,
+        #     )
+        #     self.logger.debug(res)
+        #     return res
+        # kc.stop_channels()
+        # out_content: ErrorContent = {
+        #     "ename": "NotImplementedError",
+        #     "evalue": "",
+        #     "traceback": [f"Message with id {msg_id} returned a unknown message type."],
+        # }
+        # return (
+        #     {
+        #         "status": "error",
+        #         "execution_count": self.execution_count,
+        #         "payload": [],
+        #         "user_expressions": {},
+        #     },
+        #     JupyterMessage,
+        # )
 
     # ------------------------------------------------------ #
     # ----------------- COMMANDS HANDLERS ------------------ #
@@ -1085,17 +1248,48 @@ class SilikBaseKernel(Kernel):
         return False, content
 
     def run_cmd_handler(self, args):
-        content = self.do_execute_on_sub_kernel(args.cmd, silent=False)
-        if content["status"] == "error":
+        execution_result, msg = self.do_execute_on_sub_kernel(args.cmd, silent=False)
+        if execution_result["status"] == "error":
             return (
                 True,
                 f"[{self.kernel_metadata.label}] - Error during code execution",
             )
-        return False, content
+        return False, msg
 
     def exit_cmd_handler(self, args):
-        print(1 / 0)
         return True, "Not implemented"
+
+    def source_cmd_handler(self, args):
+        try:
+            path = args.path
+        except Exception as e:
+            return True, str(e)
+
+        if not os.path.isfile(path):
+            return True, f"No file located at {path}"
+
+        with open(path, "rt", encoding="utf-8") as f:
+            code = f.read()
+
+        execution_result, msg = self.do_execute_on_silik(code, False)
+        if execution_result["status"] == "error":
+            return True, f"Could not run code from {path}"
+
+        return False, msg
+
+    def cat_cmd_handler(self, args):
+        try:
+            path = args.path
+        except Exception as e:
+            return True, str(e)
+
+        if not os.path.isfile(path):
+            return True, f"No file located at {path}"
+
+        with open(path, "rt", encoding="utf-8") as f:
+            content = f.read()
+
+        return False, content
 
     def complete_kernel_type(self, word: str):
         """
@@ -1124,6 +1318,29 @@ class SilikBaseKernel(Kernel):
             )
             if potential_match == word:
                 all_matches.append(each_kernel)
+        return all_matches
+
+    def complete_filesystem_path(self, path: str):
+        path_obj = Path(path)
+        self.logger.debug(str(path_obj))
+        if len(path) > 0 and path[-1] == "/":
+            parent = path_obj
+            name = ""
+        else:
+            parent = path_obj.parent
+            name = path_obj.name
+
+        self.logger.debug(f"last element :{name}")
+        self.logger.debug(f"parent : {parent}")
+
+        all_matches = []
+        for each_path in parent.iterdir():
+            if len(each_path.name) < len(name):
+                continue
+            potential_match = each_path.name[: len(name)]
+            if potential_match == name:
+                all_matches.append(str(each_path))
+        self.logger.debug(all_matches)
         return all_matches
 
     def complete_path(self, path: str):
@@ -1230,6 +1447,18 @@ class SilikBaseKernel(Kernel):
         exit_parser.add_argument("--restart", label="restart")
         exit_cmd = SilikCommand(self.exit_cmd_handler, exit_parser)
 
+        source_parser = KomandParser()
+        source_parser.add_argument(
+            "path", label="path", completer=self.complete_filesystem_path
+        )
+        source_cmd = SilikCommand(self.source_cmd_handler, source_parser)
+
+        cat_parser = KomandParser()
+        cat_parser.add_argument(
+            "path", label="path", completer=self.complete_filesystem_path
+        )
+        cat_cmd = SilikCommand(self.cat_cmd_handler, cat_parser)
+
         self.all_cmds: dict[str, SilikCommand] = {
             "cd": cd_cmd,
             "mkdir": mkdir_cmd,
@@ -1244,4 +1473,6 @@ class SilikBaseKernel(Kernel):
             "r": run_cmd,
             "help": help_cmd,
             "exit": exit_cmd,
+            "source": source_cmd,
+            "cat": cat_cmd,
         }
