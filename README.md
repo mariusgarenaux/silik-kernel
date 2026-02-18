@@ -2,6 +2,8 @@
 
 > A Jupyter Multi Kernel Manager, wrapped in a Jupyter Kernel 🙂
 
+![](example.gif)
+
 This is a jupyter kernel that allows to interface with multiple kernels, you can:
 
 - start, stop and restart kernels,
