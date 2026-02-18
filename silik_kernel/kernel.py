@@ -92,7 +92,7 @@ class SilikBaseKernel(Kernel):
 
         if should_custom_log:
             logger = setup_kernel_logger(__name__, self.kernel_metadata.id)
-            logger.debug(f"Started kernel {self.kernel_metadata} and initalized logger")
+            logger.info(f"Started kernel {self.kernel_metadata} and initalized logger")
             self.logger = logger
         else:
             self.logger = self.log
@@ -147,7 +147,7 @@ class SilikBaseKernel(Kernel):
         try:
             first_word_trigger = code.split(" ")[0]
             if first_word_trigger in ["/cmd", "/cnct"]:
-                self.logger.debug("Detected switch mode trigger")
+                self.logger.info("Detected switch mode trigger")
                 if first_word_trigger == "/cmd":
                     self.mode = "cmd"
                     self.send_response(
@@ -190,7 +190,7 @@ class SilikBaseKernel(Kernel):
 
             # then either run code, or give it to sub-kernels
             if self.mode == "cmd":
-                self.logger.debug("Running command")
+                self.logger.info("Running in command mode.")
                 execution_result, msg = self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
@@ -198,7 +198,7 @@ class SilikBaseKernel(Kernel):
                     self.send_response(self.iopub_socket, "error", msg)
                 else:
                     self.send_response(self.iopub_socket, "execute_result", msg)
-                self.logger.debug(f"Output of command : {msg}")
+                self.logger.info(f"Output of command : {msg}")
                 return execution_result
             elif self.mode == "cnct":
                 execution_result, msg = self.do_execute_on_sub_kernel(
@@ -300,7 +300,7 @@ class SilikBaseKernel(Kernel):
         for line in splitted_code:
             if line == "":
                 continue
-            self.logger.debug(f"Running line : `{line}`")
+            self.logger.info(f"Running line : `{line}`")
             execution_result, msg = self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
@@ -357,7 +357,7 @@ class SilikBaseKernel(Kernel):
         """
         splitted = code.split(maxsplit=1)
         if len(splitted) == 0:
-            self.logger.warning(f"Code {code} is empty")
+            self.logger.warning(f"Code {code} is empty.")
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
@@ -394,7 +394,7 @@ class SilikBaseKernel(Kernel):
             self.logger.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
 
         args = cmd_obj.parser.parse(args_str)
-        self.logger.debug(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
+        self.logger.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
         try:
             execution_result, msg = cmd_obj.handler(args)
         except Exception as e:
@@ -538,7 +538,7 @@ class SilikBaseKernel(Kernel):
             of do_execute method of IPykernel wrapper. The JupyterMessage is the message from
             the jupyter kernel protocol. Straight from sub-kernel.
         """
-        self.logger.debug(f"Code is sent to selected kernel : {self.active_kernel}")
+        self.logger.info(f"Code is sent to selected kernel : {self.active_kernel}")
 
         execution_result, msg = self.send_code_to_sub_kernel(
             self.active_kernel,
@@ -596,7 +596,7 @@ class SilikBaseKernel(Kernel):
                 elif msg_type == "error":
                     output = msg["content"]
                     break
-            self.logger.debug(f"is complete from {self.active_kernel.label}: {output}")
+            self.logger.debug(f"is_complete from {self.active_kernel.label}: {output}")
             kc.stop_channels()
             if len(output) == 0:
                 return {"status": "unknown"}
@@ -1013,18 +1013,24 @@ class SilikBaseKernel(Kernel):
             "allow_stdin": allow_stdin,
             "stop_on_error": True,
         }
+        self.logger.debug(
+            f"Created channel with sub-kernel. Sending execute request: {content}."
+        )
+
         msg = kc.session.msg(
             "execute_request",
             content,
         )
-
         kc.shell_channel.send(msg)
         msg_id = msg["header"]["msg_id"]
+
+        self.logger.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
 
         while True:
             msg: JupyterMessage = (
                 kc.get_iopub_msg()  # pyright: ignore[reportAssignmentType]
             )
+            self.logger.debug(f"Received msg : {msg}")
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
 
@@ -1090,31 +1096,48 @@ class SilikBaseKernel(Kernel):
     # ----------------- COMMANDS HANDLERS ------------------ #
     # ------------------------------------------------------ #
 
-    def help_cmd_handler(
-        self, args
-    ) -> Tuple[
-        ExecutionResult, ExecuteResultContent
-    ]:  # TODO: retrieve docstrings of handler methods
-        doc = {
-            "cd <path>": "Moves the selected kernel in the kernel tree",
-            "ls | tree": "Displays the kernels tree",
-            "mkdir <kernel_type> --label=<kernel_label>": "starts a kernel (see 'kernels' command)",
-            "run <code>": "run code on selected kernel - in one shot",
-            "restart": "restart the selected kernel",
-            "branch <kernel_label>": "branch the output of selected kernel to the input of one of its children. Output of parent kernel is now output of children kernel. (In -> Parent Kernel -> Children Kernel -> Out)",
-            "detach": "detach the branch starting from the selected kernel",
-            "history": "displays the cells input history for this kernel",
-            "kernels": "displays the list of available kernels types",
-            "/cnct": "direct connection towards selected kernel : cells will be directly executed on this kernel; except if cell content is '/cmd'",
-            "/cmd": "switch to command mode (default one) - exit /cnct mode",
-        }
-        content = "Silik Kernel allows to manage a group of kernels.\n\n"
-        content += f"Start by running `mkdir <kernel_type> --label=my-kernel` with <kernel_type> among {self.get_available_kernels}.\n\n"
-        content += "Then, you can run `cd my-kernel` and, `run <code>` to run one shot code in this kernel.\n\n"
-        content += "You can also run /cnct to avoid typing `run`. /cmd allows at any time to go back to command mode (navigation and creation of kernels).\n\n"
-        content += "Here is a quick reminder of available commands : \n\n"
-        for key, value in doc.items():
-            content += f"• {key} : {value}\n"
+    def help_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Display the help message.
+
+        Parameters :
+        ---
+            - cmd (flag): the name of the command
+
+        Example :
+        ---
+            In [2]: help --cmd cat
+            Out[2]:
+            • cat :
+                    Display the content of a text file on the filesystem where the kernel runs.
+
+                    Example :
+                    ---
+                        In [1]: cat ../init.txt
+                        Out[1]:
+                        mkdir python3 --label py
+                        cd py
+
+                    Parameters :
+                    ---
+                        - path (positional): the path (relative or absolute) towards the text file
+
+        """
+        cmd_name = None
+        try:
+            cmd_name = args.cmd
+        except Exception as e:
+            pass
+
+        if cmd_name is None:
+            content = ""
+            for key, value in self.all_cmds.items():
+                cmd_help = f"• {key} : "
+                cmd_help += f"{value.handler.__doc__}"
+                content += cmd_help + "\n"
+
+        else:
+            content = f"• {cmd_name} : {self.all_cmds[cmd_name].handler.__doc__}"
 
         return {
             "status": "ok",
@@ -1128,6 +1151,30 @@ class SilikBaseKernel(Kernel):
         }
 
     def cd_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Moves the cursor of the selected kernel within the kernel tree.
+
+        Example :
+        ---
+            ├─ qwen4b-dist [pydantic_ai] <<
+            │  ╰─ py [python3]
+            ├─ qwen1.7-local [pydantic_ai]
+            ├─ internet [ddgs]
+            ╰─ coder [code-helper]
+
+            In [2]: cd py
+            Out[2]:
+            ├─ qwen4b-dist [pydantic_ai]
+            │  ╰─ py [python3] <<
+            ├─ qwen1.7-local [pydantic_ai]
+            ├─ internet [ddgs]
+            ╰─ coder [code-helper]
+
+        Parameters :
+        ---
+            - path (positional): the path (relative or absolute) towards the new
+                selected kernel
+        """
         if args.path is None or not args.path:
             found_kernel = self.kernel_metadata
         else:
@@ -1150,6 +1197,32 @@ class SilikBaseKernel(Kernel):
         }
 
     def mkdir_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Starts a new kernel, from the root of the selected kernel.
+        Use tab completion or send 'kernels' command to see the
+        list of availabel kernels.
+
+        Examples :
+        ---
+            ├─ qwen4b-dist [pydantic_ai] <<
+            ├─ qwen1.7-local [pydantic_ai]
+            ├─ internet [ddgs]
+            ╰─ coder [code-helper]
+
+            In [2]: mkdir python3 --label py
+            Out[2]:
+            ├─ qwen4b-dist [pydantic_ai] <<
+            │  ╰─ py [python3]
+            ├─ qwen1.7-local [pydantic_ai]
+            ├─ internet [ddgs]
+            ╰─ coder [code-helper]
+
+        Parameters :
+        ---
+            - kernel_type (positional) : the type of the kernel which will be started. Must
+                be one of available kernels (see `kernels` command)
+            - label (flag) : the label of the started kernel
+        """
         active_node = self.find_node_by_metadata(self.active_kernel)
 
         if active_node is None:
@@ -1184,6 +1257,19 @@ class SilikBaseKernel(Kernel):
         }
 
     def ls_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Display the tree of kernels.
+
+        Example :
+        ---
+            In [1]: ls
+            Out[1]:
+            ├─ qwen4b-dist [pydantic_ai]
+            │  ╰─ py [python3] <<
+            ├─ qwen1.7-local [pydantic_ai]
+            ├─ internet [ddgs]
+            ╰─ coder [code-helper]
+        """
         content = self.root_node.tree_to_str(self.active_kernel)
         return {
             "status": "ok",
@@ -1197,6 +1283,15 @@ class SilikBaseKernel(Kernel):
         }
 
     def restart_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Restart the selected kernel.
+
+        Example :
+        ---
+            ╰─ py [python3] <<
+            In [1]: restart
+            Out[1]: Restarted kernel py
+        """
         self.mkm.restart_kernel(self.active_kernel.id)
         content = f"Restarted kernel {self.active_kernel.label}"
         return {
@@ -1211,6 +1306,14 @@ class SilikBaseKernel(Kernel):
         }
 
     def kernels_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Returns the list of available kernel that can be started from silik.
+
+        Example :
+        ---
+            In [1]: kernels
+            Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
+        """
         content = self.get_available_kernels
 
         return {
@@ -1225,6 +1328,15 @@ class SilikBaseKernel(Kernel):
         }
 
     def history_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Display the history of the selected kernel.
+
+        Example :
+        ---
+            In [1]: history
+            Out[1]: [[0, 1, "x=19"], [0, 1, "print(x)"]]
+
+        """
         content = self.get_kernel_history(self.active_kernel.id)
 
         return {
@@ -1281,7 +1393,17 @@ class SilikBaseKernel(Kernel):
 
     def run_cmd_handler(self, args) -> Tuple[ExecutionResult, IOPubMsg]:
         """
-        Send a message to the active sub kernel. Returns the result
+        Send a message to the active sub kernel. Returns the result through
+        IOPub channel.
+
+        Example :
+        ---
+            In [1]: run "1+1"
+            Out[1]: 2
+
+        Parameters :
+        ---
+            - cmd (positional): The command to be run.
         """
         execution_result, jupyter_msg = self.do_execute_on_sub_kernel(
             args.cmd, silent=False
@@ -1321,6 +1443,32 @@ class SilikBaseKernel(Kernel):
         raise NotImplementedError("Exit command is not yet implemented.")
 
     def source_cmd_handler(self, args):
+        """
+        Execute the content of a text file on the silik kernel.
+        The text file is located on the filesystem where the kernel runs.
+        Relative paths are from where you started the jupyter kernel.
+
+        The content must be commands that can be run on silik.
+        Multiline commands are supported.
+
+            <!> : `/cnct` and `/cmd` are control on the silik kernel, not commands;
+                and hence cannot be present in script files
+
+        Example :
+        ---
+            init.txt :
+                ```txt
+                mkdir python3 --label py
+                cd py
+                ```
+            In [1]: source init.txt
+            Out[1]:
+            ╰─ py [python3] <<
+
+        Parameters :
+        ---
+            - path (positional): the path (relative or absolute) towards the text file
+        """
         path = args.path
 
         with open(path, "rt", encoding="utf-8") as f:
@@ -1329,6 +1477,22 @@ class SilikBaseKernel(Kernel):
         return self.do_execute_on_silik(code, False)
 
     def cat_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Display the content of a text file. The text file is located on the
+        filesystem where the kernel runs. Relative paths are from where you started
+        the jupyter kernel.
+
+        Example :
+        ---
+            In [1]: cat ../init.txt
+            Out[1]:
+            mkdir python3 --label py
+            cd py
+
+        Parameters :
+        ---
+            - path (positional): the path (relative or absolute) towards the text file
+        """
         path = args.path
         with open(path, "rt", encoding="utf-8") as f:
             content = f.read()
@@ -1360,15 +1524,10 @@ class SilikBaseKernel(Kernel):
             ['python3', 'python']
         """
         all_matches = []
-        self.logger.debug(f"heeere {self.get_available_kernels}")
         for each_kernel in self.get_available_kernels:
-            self.logger.debug(f"each kernel {each_kernel}")
             if len(each_kernel) < len(word):
                 continue
             potential_match = each_kernel[: len(word)]
-            self.logger.debug(
-                f"here potential match {potential_match}, len {len(word)}"
-            )
             if potential_match == word:
                 all_matches.append(each_kernel)
         return all_matches
@@ -1394,6 +1553,17 @@ class SilikBaseKernel(Kernel):
             if potential_match == name:
                 all_matches.append(str(each_path))
         self.logger.debug(all_matches)
+        return all_matches
+
+    def complete_cmd_name(self, cmd_name):
+        self.logger.debug(f"Completing cmd name {cmd_name}")
+        all_matches = []
+        for each_cmd in self.all_cmds:
+            if len(each_cmd) < len(cmd_name):
+                continue
+            potential_match = each_cmd[: len(cmd_name)]
+            if potential_match == cmd_name:
+                all_matches.append(each_cmd)
         return all_matches
 
     def complete_path(self, path: str):
@@ -1494,6 +1664,7 @@ class SilikBaseKernel(Kernel):
         detach_cmd = SilikCommand(self.detach_cmd_handler, detach_parser)
 
         help_parser = KomandParser()
+        help_parser.add_argument("--cmd", label="cmd", completer=self.complete_cmd_name)
         help_cmd = SilikCommand(self.help_cmd_handler, help_parser)
 
         exit_parser = KomandParser()
@@ -1516,16 +1687,16 @@ class SilikBaseKernel(Kernel):
             "cd": cd_cmd,
             "mkdir": mkdir_cmd,
             "ls": ls_cmd,
-            "tree": ls_cmd,
+            # "tree": ls_cmd,
             "restart": restart_cmd,
             "kernels": kernels_cmd,
             "history": history_cmd,
-            "branch": branch_cmd,
-            "detach": detach_cmd,
+            # "branch": branch_cmd,
+            # "detach": detach_cmd,
             "run": run_cmd,
-            "r": run_cmd,
+            # "r": run_cmd,
             "help": help_cmd,
-            "exit": exit_cmd,
+            # "exit": exit_cmd,
             "source": source_cmd,
             "cat": cat_cmd,
         }
