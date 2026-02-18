@@ -29,7 +29,7 @@ from jupyter_client.multikernelmanager import MultiKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.5.1"
+SILIK_VERSION = "1.5.2"
 
 
 class SilikBaseKernel(Kernel):
@@ -198,7 +198,7 @@ class SilikBaseKernel(Kernel):
                     self.send_response(self.iopub_socket, "error", msg)
                 else:
                     self.send_response(self.iopub_socket, "execute_result", msg)
-                self.logger.debug("Output of command : {msg}")
+                self.logger.debug(f"Output of command : {msg}")
                 return execution_result
             elif self.mode == "cnct":
                 execution_result, msg = self.do_execute_on_sub_kernel(
@@ -294,18 +294,19 @@ class SilikBaseKernel(Kernel):
             is meant to be sent to IOPub Socket.
         """
         splitted_code = code.split("\n")
-        self.logger.debug(f"Splitted code {splitted_code}")
-        if len(splitted_code) == 1:
-            return self.do_execute_one_command_on_silik(
-                code, silent, store_history, user_expressions, allow_stdin
-            )
+        self.logger.debug(f"Splitted Multiline Code {splitted_code}")
+
         execution_result, msg = None, None
         for line in splitted_code:
+            if line == "":
+                continue
+            self.logger.debug(f"Running line : `{line}`")
             execution_result, msg = self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
             if execution_result.get("status") == "error":
                 return execution_result, msg
+
         if execution_result is None or msg is None:
             return {
                 "status": "error",
@@ -967,7 +968,6 @@ class SilikBaseKernel(Kernel):
         self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.given_labels.append(kernel_label)
         self.logger.debug(f"Successfully started kernel {new_kernel}")
-        self.logger.debug(f"No kernel with label {kernel_name} is available.")
         return new_kernel
 
     def send_code_to_sub_kernel(
