@@ -1,11 +1,16 @@
+# Internal dependencies
+
+from .types import IOPubMsg, ExecutionResult
+
 # Basic python dependencies
 import os
 from dataclasses import dataclass, field
 import random
 from pathlib import Path
 import logging
-from typing import Literal, List, Optional, Callable, TypedDict
+from typing import Literal, List, Optional, Callable, Annotated, Tuple
 from statikomand import KomandParser
+from statikomand.komand_parser import ParsedKomandArgs
 
 ALL_KERNELS_LABELS = [
     "lama",
@@ -188,5 +193,8 @@ class SilikCommandParser:
 
 @dataclass
 class SilikCommand:
-    handler: Callable
+    handler: Annotated[
+        Callable[[ParsedKomandArgs], Tuple[ExecutionResult, IOPubMsg]],
+        "Method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg)",
+    ]
     parser: KomandParser

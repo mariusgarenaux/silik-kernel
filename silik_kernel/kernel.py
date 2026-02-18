@@ -3,9 +3,7 @@ import os
 from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
-import re
 from typing import Literal, Optional, Tuple
-import shlex
 
 # Internal dependencies
 from .tools import (
@@ -22,6 +20,7 @@ from .types import (
     JupyterMessage,
     ExecuteRequestContent,
     ErrorContent,
+    ExecuteResultContent,
 )
 
 # External dependencies
@@ -29,6 +28,8 @@ from ipykernel.kernelbase import Kernel
 from jupyter_client.multikernelmanager import MultiKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
+
+SILIK_VERSION = "1.5.1"
 
 
 class SilikBaseKernel(Kernel):
@@ -66,9 +67,9 @@ class SilikBaseKernel(Kernel):
     """
 
     implementation = "Silik"
-    implementation_version = "1.0"
+    implementation_version = SILIK_VERSION
     language = "no-op"
-    language_version = "0.1"
+    language_version = SILIK_VERSION
     language_info = {
         "name": "silik",
         "mimetype": "text/plain",
@@ -77,7 +78,6 @@ class SilikBaseKernel(Kernel):
     banner = "Silik Kernel - Multikernel Manager - Run `help` for commands"
     all_kernels_labels: list[str] = ALL_KERNELS_LABELS
     mkm: MultiKernelManager = MultiKernelManager()
-    message_history: dict[str, list] = {}  # history of messages
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -394,46 +394,23 @@ class SilikBaseKernel(Kernel):
 
         args = cmd_obj.parser.parse(args_str)
         self.logger.debug(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
-        cmd_out = cmd_obj.handler(args)
-        self.logger.debug(f"Output of `{cmd_name}` : `{cmd_out}`")
-        if cmd_out is None:
-            return (
-                {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                },
-                {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": ""},
-                    "metadata": {},
-                },
-            )
-        is_error, output_content = cmd_out
-
-        if is_error:
+        try:
+            execution_result, msg = cmd_obj.handler(args)
+        except Exception as e:
+            self.logger.info(f"Error when running command `{cmd_name}` : `{e}`")
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
                 "payload": [],
                 "user_expressions": {},
             }, {
-                "ename": "SilikCmdError",
-                "evalue": cmd_name,
-                "traceback": [output_content],
+                "ename": "CommandError",
+                "evalue": str(e),
+                "traceback": traceback.format_exception(e),
             }
 
-        return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": output_content},
-            "metadata": {},
-        }
+        self.logger.debug(f"Output of `{cmd_name}` : `{execution_result}`, `{msg}`")
+        return execution_result, msg
 
     # TODO : reimplement properly the pipe (|)
     #       -> need to define properly what is the stdin input of a silik command :-)
@@ -1113,7 +1090,11 @@ class SilikBaseKernel(Kernel):
     # ----------------- COMMANDS HANDLERS ------------------ #
     # ------------------------------------------------------ #
 
-    def help_cmd_handler(self, args):
+    def help_cmd_handler(
+        self, args
+    ) -> Tuple[
+        ExecutionResult, ExecuteResultContent
+    ]:  # TODO: retrieve docstrings of handler methods
         doc = {
             "cd <path>": "Moves the selected kernel in the kernel tree",
             "ls | tree": "Displays the kernels tree",
@@ -1135,153 +1116,233 @@ class SilikBaseKernel(Kernel):
         for key, value in doc.items():
             content += f"• {key} : {value}\n"
 
-        return False, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
-    def cd_cmd_handler(self, args):
-        error = False
+    def cd_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         if args.path is None or not args.path:
             found_kernel = self.kernel_metadata
         else:
             found_kernel = self.find_kernel_metadata_from_path(args.path)
+
         if found_kernel is None:
-            error = True
-            content = f"Could not find kernel located at {args.path}"
-            return error, content
+            raise ValueError(f"Could not find kernel located at {args.path}")
+
         self.active_kernel = found_kernel
         content = self.root_node.tree_to_str(self.active_kernel)
-        return error, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
-    def mkdir_cmd_handler(self, args):
-        self.logger.debug(f"mkdir with args {args}")
-        error = False
+    def mkdir_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         active_node = self.find_node_by_metadata(self.active_kernel)
-        self.logger.debug(active_node)
+
         if active_node is None:
-            error = True
-            content = f"Could not find node in the kernel tree with value {self.active_kernel}"
-            return error, content
+            raise ValueError(
+                f"Could not find node in the kernel tree with value {self.active_kernel}"
+            )
+
         if not args.kernel_type:
-            error = True
-            content = f"Please specify a kernel-type among {self.get_available_kernels}"
-            self.logger.debug(f"{error, content}")
-            return error, content
+            raise ValueError(
+                f"Please specify a kernel-type among {self.get_available_kernels}"
+            )
 
         new_kernel = self.start_kernel(
             args.kernel_type, None if not args.label else args.label
         )
         if new_kernel is None:
-            return (
-                True,
-                f"The label {args.label} already exists, please choose an other one.",
+            raise ValueError(
+                f"The label {args.label} already exists, please choose an other one."
             )
         active_node.children.append(KernelTreeNode(new_kernel, parent=active_node))
         self.all_kernels.append(new_kernel)
         content = self.root_node.tree_to_str(self.active_kernel)
-        return error, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
-    def ls_cmd_handler(self, args):
+    def ls_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         content = self.root_node.tree_to_str(self.active_kernel)
-        self.logger.debug(f"ls here {content}")
-        return False, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
-    def restart_cmd_handler(self, args):
+    def restart_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         self.mkm.restart_kernel(self.active_kernel.id)
         content = f"Restarted kernel {self.active_kernel.label}"
-        return False, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
-    def kernels_cmd_handler(self, args):
+    def kernels_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         content = self.get_available_kernels
-        return False, content
 
-    def history_cmd_handler(self, args):
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
+
+    def history_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         content = self.get_kernel_history(self.active_kernel.id)
-        return False, content
+
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
     def branch_cmd_handler(self, args):
-        # connects output of selected kernel to one kernel
-        out_kernel = self.get_kernel_from_label(args.kernel_label)
-        if out_kernel is None:
-            error = True
-            content = f"No kernel was found with label `{args.kernel_label}`"
-            return error, content
+        raise NotImplementedError("Branch command is not yet implemented.")
+        # # connects output of selected kernel to one kernel
+        # out_kernel = self.get_kernel_from_label(args.kernel_label)
+        # if out_kernel is None:
+        #     error = True
+        #     content = f"No kernel was found with label `{args.kernel_label}`"
+        #     return error, content
 
-        active_kernel_node = self.find_node_by_metadata(self.active_kernel)
-        if active_kernel_node is None:
-            error = True
-            content = (
-                f"No kernel was found on tree with label {self.active_kernel.label}."
-            )
-            return error, content
+        # active_kernel_node = self.find_node_by_metadata(self.active_kernel)
+        # if active_kernel_node is None:
+        #     error = True
+        #     content = (
+        #         f"No kernel was found on tree with label {self.active_kernel.label}."
+        #     )
+        #     return error, content
 
-        out_kernel_node = self.find_node_by_metadata(out_kernel)
-        if out_kernel_node is None:
-            error = True
-            content = f"No kernel was found on tree with label {out_kernel.label}."
-            return error, content
+        # out_kernel_node = self.find_node_by_metadata(out_kernel)
+        # if out_kernel_node is None:
+        #     error = True
+        #     content = f"No kernel was found on tree with label {out_kernel.label}."
+        #     return error, content
 
-        if out_kernel_node not in active_kernel_node.children:
-            error = True
-            content = f"Kernel {out_kernel.label} not in {self.active_kernel.label} childrens. Branching is only available from a parent to a children."
-            return error, content
+        # if out_kernel_node not in active_kernel_node.children:
+        #     error = True
+        #     content = f"Kernel {out_kernel.label} not in {self.active_kernel.label} childrens. Branching is only available from a parent to a children."
+        #     return error, content
 
-        self.active_kernel.is_branched_to = out_kernel
+        # self.active_kernel.is_branched_to = out_kernel
 
-        trust_level = 0
-        if args.trust_level in ["0", "1", "2", 0, 1, 2]:
-            trust_level = int(args.trust_level)
+        # trust_level = 0
+        # if args.trust_level in ["0", "1", "2", 0, 1, 2]:
+        #     trust_level = int(args.trust_level)
 
-        self.active_kernel.branch_trust_level = trust_level  # pyright: ignore
-        content = self.root_node.tree_to_str(self.active_kernel)
-        return False, content
+        # self.active_kernel.branch_trust_level = trust_level  # pyright: ignore
+        # content = self.root_node.tree_to_str(self.active_kernel)
+        # return False, content
 
     def detach_cmd_handler(self, args):
-        self.active_kernel.is_branched_to = None
-        content = self.root_node.tree_to_str(self.active_kernel)
-        return False, content
+        raise NotImplementedError("Detach command is not yet implemented.")
 
-    def run_cmd_handler(self, args):
-        execution_result, msg = self.do_execute_on_sub_kernel(args.cmd, silent=False)
-        if execution_result["status"] == "error":
-            return (
-                True,
-                f"[{self.kernel_metadata.label}] - Error during code execution",
-            )
-        return False, msg
+    def run_cmd_handler(self, args) -> Tuple[ExecutionResult, IOPubMsg]:
+        """
+        Send a message to the active sub kernel. Returns the result
+        """
+        execution_result, jupyter_msg = self.do_execute_on_sub_kernel(
+            args.cmd, silent=False
+        )
 
-    def exit_cmd_handler(self, args):
-        return True, "Not implemented"
+        msg_type = jupyter_msg["msg_type"]
+
+        match msg_type:
+            case "stream":
+                content = jupyter_msg["content"]["text"]
+                return execution_result, {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": content},
+                    "metadata": {},
+                }
+            case "display_data" | "update_display_data":
+                content = jupyter_msg["content"]["data"]["text/plain"]
+                return execution_result, {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": content},
+                    "metadata": {},
+                }
+            case "execute_result" | "error":
+                return execution_result, jupyter_msg["content"]
+            case "execute_input" | "clear_output" | "status":
+                return execution_result, {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": ""},
+                    "metadata": {},
+                }
+            case _:
+                raise Exception(
+                    f"Message of run command is of type {msg_type}; which is not sendable through IOPubSocket"
+                )
+
+    def exit_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        raise NotImplementedError("Exit command is not yet implemented.")
 
     def source_cmd_handler(self, args):
-        try:
-            path = args.path
-        except Exception as e:
-            return True, str(e)
-
-        if not os.path.isfile(path):
-            return True, f"No file located at {path}"
+        path = args.path
 
         with open(path, "rt", encoding="utf-8") as f:
             code = f.read()
 
-        execution_result, msg = self.do_execute_on_silik(code, False)
-        if execution_result["status"] == "error":
-            return True, f"Could not run code from {path}"
+        return self.do_execute_on_silik(code, False)
 
-        return False, msg
-
-    def cat_cmd_handler(self, args):
-        try:
-            path = args.path
-        except Exception as e:
-            return True, str(e)
-
-        if not os.path.isfile(path):
-            return True, f"No file located at {path}"
-
+    def cat_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        path = args.path
         with open(path, "rt", encoding="utf-8") as f:
             content = f.read()
 
-        return False, content
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": content},
+            "metadata": {},
+        }
 
     def complete_kernel_type(self, word: str):
         """

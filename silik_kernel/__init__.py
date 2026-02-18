@@ -1,5 +1,5 @@
 """Silik Base Kernel : Multi Kernel Interaction"""
 
-__version__ = "1.5.1"
+from .kernel import SilikBaseKernel, SILIK_VERSION  # noqa: F401
 
-from .kernel import SilikBaseKernel  # noqa: F401
+__version__ = SILIK_VERSION
