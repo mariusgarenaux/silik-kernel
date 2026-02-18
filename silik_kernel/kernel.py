@@ -190,15 +190,15 @@ class SilikBaseKernel(Kernel):
 
             # then either run code, or give it to sub-kernels
             if self.mode == "cmd":
-                self.logger.debug(f"Command mode on {self.kernel_metadata.label}")
+                self.logger.debug("Running command")
                 execution_result, msg = self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
                 if execution_result.get("status") == "error":
-                    self.send_response(self.iopub_socket, "error", execution_result)
+                    self.send_response(self.iopub_socket, "error", msg)
                 else:
                     self.send_response(self.iopub_socket, "execute_result", msg)
-                self.logger.debug(f"Output of command : {msg}")
+                self.logger.debug("Output of command : {msg}")
                 return execution_result
             elif self.mode == "cnct":
                 execution_result, msg = self.do_execute_on_sub_kernel(
@@ -296,12 +296,12 @@ class SilikBaseKernel(Kernel):
         splitted_code = code.split("\n")
         self.logger.debug(f"Splitted code {splitted_code}")
         if len(splitted_code) == 1:
-            return self.do_execute_one_line_on_silik(
+            return self.do_execute_one_command_on_silik(
                 code, silent, store_history, user_expressions, allow_stdin
             )
         execution_result, msg = None, None
         for line in splitted_code:
-            execution_result, msg = self.do_execute_one_line_on_silik(
+            execution_result, msg = self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
             if execution_result.get("status") == "error":
@@ -321,7 +321,7 @@ class SilikBaseKernel(Kernel):
 
     def do_execute_one_command_on_silik(
         self,
-        splitted: list[str],
+        code: str,
         silent: bool,
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
@@ -337,8 +337,7 @@ class SilikBaseKernel(Kernel):
 
         Parameters :
         ---
-            - splitted (list[str]) : the list of tokens of the command. Replaces the usual
-                'code' parameter of jupyter do_execute methods.
+            - code (str) : the line of code that will be executed
             - silent (bool) : Whether to display output.
             - store_history (bool) : Whether to record this code in history and increase
                  the execution count. If silent is True, this is implicitly False.
@@ -355,12 +354,9 @@ class SilikBaseKernel(Kernel):
             of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
             is meant to be sent to IOPub Socket.
         """
+        splitted = code.split(maxsplit=1)
         if len(splitted) == 0:
-            self.logger.debug(f"Splitted is empty {splitted}")
-            # self.send_response(
-            #     self.iopub_socket,
-            #     "error"
-            # )
+            self.logger.warning(f"Code {code} is empty")
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
@@ -372,9 +368,9 @@ class SilikBaseKernel(Kernel):
                 "traceback": ["Could not parse command"],
             }
         cmd_name = splitted[0]
-        self.logger.debug(f"Command {cmd_name} | Splitted {splitted}")
+        self.logger.debug(f"Splitted command. Command name : `{cmd_name}`.")
         if cmd_name not in self.all_cmds:
-            self.logger.debug(f"Cmd not found {cmd_name}")
+            self.logger.warning(f"Command `{cmd_name}` was not found")
 
             return {
                 "status": "error",
@@ -383,33 +379,23 @@ class SilikBaseKernel(Kernel):
                 "user_expressions": {},
             }, {
                 "ename": "UnknownCommand",
-                "evalue": "Unknown command",
+                "evalue": cmd_name,
                 "traceback": [
-                    f"Command {cmd_name} not found. Available commands : {self.all_cmds.keys()}"
+                    f"Command `{cmd_name}` not found. Available commands : {self.all_cmds.keys()}"
                 ],
             }
         cmd_obj = self.all_cmds[cmd_name]
-        self.logger.debug(f"Cmd obj {cmd_obj}")
-        arg_list = splitted[1:]
-        if (
-            cmd_stdin is not None
-        ):  # we check if cmd_stdin need to be added to positionals arguments
-            self.logger.debug(f"arg list{arg_list}")
-            k = 0
-            for each_arg in arg_list:
-                if each_arg[k] == "-":
-                    break
-                k += 1
-            self.logger.debug(f"{k, len(cmd_obj.parser.positionals)}")
-            if k < len(cmd_obj.parser.positionals):
-                arg_list.insert(k, f"'{cmd_stdin}'")
+        if len(splitted) <= 1:
+            self.logger.debug(f"No arguments were found for command {cmd_name}")
+            args_str = ""
+        else:
+            args_str = splitted[1]
+            self.logger.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
 
-        code = " ".join(arg_list)
-        self.logger.debug(f"Code : {code}")
-        args = cmd_obj.parser.parse(code)
-        self.logger.debug(f"_do_execute {cmd_name} {args}, {cmd_obj.handler}")
+        args = cmd_obj.parser.parse(args_str)
+        self.logger.debug(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
         cmd_out = cmd_obj.handler(args)
-        self.logger.debug(f"here cmd_out {cmd_out}")
+        self.logger.debug(f"Output of `{cmd_name}` : `{cmd_out}`")
         if cmd_out is None:
             return (
                 {
@@ -424,18 +410,18 @@ class SilikBaseKernel(Kernel):
                     "metadata": {},
                 },
             )
-        error, output = cmd_out
+        is_error, output_content = cmd_out
 
-        if error:
+        if is_error:
             return {
                 "status": "error",
                 "execution_count": self.execution_count,
                 "payload": [],
                 "user_expressions": {},
             }, {
-                "ename": "UnknownCommand",
-                "evalue": "Unknown command",
-                "traceback": [output],
+                "ename": "SilikCmdError",
+                "evalue": cmd_name,
+                "traceback": [output_content],
             }
 
         return {
@@ -445,100 +431,103 @@ class SilikBaseKernel(Kernel):
             "user_expressions": {},
         }, {
             "execution_count": self.execution_count,
-            "data": {"text/plain": output},
+            "data": {"text/plain": output_content},
             "metadata": {},
         }
 
-    def do_execute_one_line_on_silik(
-        self,
-        code: str,
-        silent: bool,
-        store_history: bool = True,
-        user_expressions: Optional[dict] = None,
-        allow_stdin: bool = False,
-    ) -> Tuple[ExecutionResult, IOPubMsg]:
-        """
-        Executes code on this kernel, without giving it to sub kernels.
-        Sends content to IOPub channel. Accepted code contains bash like
-        commands, that is parsed and executed according to self.all_cmds
-        dictionnary.
+    # TODO : reimplement properly the pipe (|)
+    #       -> need to define properly what is the stdin input of a silik command :-)
 
-        Example commands actions :
-            - display tree,
-            - display active sub-kernels,
-            - select kernel to run future code on,
-            - start a kernel,
-            - running one-line code on sub kernels.
+    # def do_execute_one_line_on_silik(
+    #     self,
+    #     code: str,
+    #     silent: bool,
+    #     store_history: bool = True,
+    #     user_expressions: Optional[dict] = None,
+    #     allow_stdin: bool = False,
+    # ) -> Tuple[ExecutionResult, IOPubMsg]:
+    #     """
+    #     Executes code on this kernel, without giving it to sub kernels.
+    #     Sends content to IOPub channel. Accepted code contains bash like
+    #     commands, that is parsed and executed according to self.all_cmds
+    #     dictionnary.
 
-        Parameters:
-        ---
+    #     Example commands actions :
+    #         - display tree,
+    #         - display active sub-kernels,
+    #         - select kernel to run future code on,
+    #         - start a kernel,
+    #         - running one-line code on sub kernels.
 
-            - code (str) : The code to be executed.
-            - silent (bool) : Whether to display output.
-            - store_history (bool) : Whether to record this code in history and increase the execution count. If silent is True, this is implicitly False.
-            - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
-            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
+    #     Parameters:
+    #     ---
 
-        Returns :
-        ---
-            A tuple (ExecutionResult, IOPubMsg). The execution result is the expected output
-            of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
-            is meant to be sent to IOPub Socket.
-        """
-        lexer = shlex.shlex(code, posix=True, punctuation_chars="|")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-        self.logger.debug(tokens)
+    #         - code (str) : The code to be executed.
+    #         - silent (bool) : Whether to display output.
+    #         - store_history (bool) : Whether to record this code in history and increase the execution count. If silent is True, this is implicitly False.
+    #         - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
+    #         - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
 
-        # split between pipes
-        commands = []
-        current = []
-        for tok in tokens:
-            if tok == "|":
-                commands.append(current)
-                current = []
-            else:
-                current.append(tok)
-        if current:
-            commands.append(current)
-        self.logger.debug(f"Commands : {commands}")
+    #     Returns :
+    #     ---
+    #         A tuple (ExecutionResult, IOPubMsg). The execution result is the expected output
+    #         of do_execute method of IPykernel wrapper. The IOPubMsg is the message that
+    #         is meant to be sent to IOPub Socket.
+    #     """
+    #     lexer = shlex.shlex(code, posix=True, punctuation_chars="|")
+    #     lexer.whitespace_split = True
+    #     tokens = list(lexer)
+    #     self.logger.debug(tokens)
 
-        cmd_stdin = None
-        execution_result, msg = None, None
-        for each_command in commands:
-            execution_result, msg = self.do_execute_one_command_on_silik(
-                each_command,
-                silent,
-                store_history,
-                user_expressions,
-                allow_stdin,
-                cmd_stdin,
-            )
-            if execution_result.get("status") == "error":
-                return execution_result, msg
+    #     # split between pipes
+    #     commands = []
+    #     current = []
+    #     for tok in tokens:
+    #         if tok == "|":
+    #             commands.append(current)
+    #             current = []
+    #         else:
+    #             current.append(tok)
+    #     if current:
+    #         commands.append(current)
+    #     self.logger.debug(f"Commands : {commands}")
 
-            self.logger.debug(f"CMD out : {msg}, {execution_result}")
+    #     cmd_stdin = None
+    #     execution_result, msg = None, None
+    #     for each_command in commands:
+    #         execution_result, msg = self.do_execute_one_command_on_silik(
+    #             each_command,
+    #             silent,
+    #             store_history,
+    #             user_expressions,
+    #             allow_stdin,
+    #             cmd_stdin,
+    #         )
+    #         if execution_result.get("status") == "error":
+    #             return execution_result, msg
 
-            if execution_result.get("status") == "ok":
-                cmd_stdin = msg.get("data", {}).get("text/plain", None)
-            else:
-                cmd_stdin = None
+    #         self.logger.debug(f"CMD out : {msg}, {execution_result}")
 
-            self.logger.debug(execution_result, msg)
-            self.logger.debug(f"stdin : {cmd_stdin}")
-        if execution_result is None or msg is None:
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }, {
-                "ename": "UnknownCommand",
-                "evalue": "Unknown command",
-                "traceback": ["Silik Internal Error"],
-            }
+    #         if execution_result.get("status") == "ok":
+    #             cmd_stdin = msg.get("data", {}).get("text/plain", None)
+    #         else:
+    #             cmd_stdin = None
 
-        return execution_result, msg
+    #         self.logger.debug(execution_result, msg)
+    #         self.logger.debug(f"stdin : {cmd_stdin}")
+    #     if execution_result is None or msg is None:
+    #         return {
+    #             "status": "error",
+    #             "execution_count": self.execution_count,
+    #             "payload": [],
+    #             "user_expressions": {},
+    #         }, {
+    #             "ename": "UnknownCommand",
+    #             "evalue": "Unknown command",
+    #             "traceback": ["Silik Internal Error"],
+    #         }
+
+    #     return execution_result, msg
 
     def do_execute_on_sub_kernel(
         self,
@@ -1181,7 +1170,10 @@ class SilikBaseKernel(Kernel):
             args.kernel_type, None if not args.label else args.label
         )
         if new_kernel is None:
-            return True, "The label already exists, please choose an other one."
+            return (
+                True,
+                f"The label {args.label} already exists, please choose an other one.",
+            )
         active_node.children.append(KernelTreeNode(new_kernel, parent=active_node))
         self.all_kernels.append(new_kernel)
         content = self.root_node.tree_to_str(self.active_kernel)

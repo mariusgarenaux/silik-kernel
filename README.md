@@ -8,7 +8,7 @@ This is a jupyter kernel that allows to interface with multiple kernels, you can
 
 - list available kernels.
 
-As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kernel; and returns the result in a cell output.
+As a jupyter kernel, it takes text as input, transfer it to appropriate sub-kernel; and returns the result in a cell output. Silik kernel also forwards TAB completion from kernels, as well as multiline cells.
 
 > **Any jupyter kernel can be plugged to silik**
 
