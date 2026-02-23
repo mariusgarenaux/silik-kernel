@@ -1,6 +1,6 @@
 # Silik Kernel
 
-> A Jupyter Multi Kernel Manager, wrapped in a Jupyter Kernel 🙂
+> A Jupyter Multi Kernel Manager, wrapped in a Jupyter Kernel 🙂 Because "who is more qualified to relay kernel messages than a kernel itself ?"
 
 ![](example.gif)
 
@@ -18,7 +18,7 @@ A Silik Kernel can be in two modes :
 
 - **`command`** mode : manage kernels (start, stop, ...),
 
-- **`connect`** mode : connects to one kernel, and acts as a gateway with this kernel. Support for TAB completion, and propagation of all sockets is implemented here.
+- **`connect`** mode : connects to one kernel, and acts as a gateway with this kernel. Support for TAB completion, and propagation of most sockets messages is implemented here.
 
 > **Any jupyter kernel can be accessed through silik-kernel**
 
@@ -126,14 +126,21 @@ Existing projects involving multi kernel management already exists :
 
 - [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/) : an other multi-kernel manager, through jupyter notebook. Uses a 'Super Kernel' to manage all sub-kernels. To our knowledge, the Super Kernel is not a Jupyter Kernel.
 
-The difference between these projects and silik-kernel is the fact that we wrapped the Kernel Manager itself in a Jupyter Kernel.
+- [jupyter-kernel-mcp](https://github.com/codewithcheese/jupyter-kernel-mcp): MCP server that allows to manage multi kernels. Unlike [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server), it interact directly with jupyter kernels.
 
-Instead of using high-level commands to manage kernels (like SoS notebooks), we use a lightweight bash-like language. This allows to reuse existing jupyter messaging protocol for multi-kernel management (and hence branching any front-end to it). In SoS, the interaction between kernels is dealt with a protocol that allows to share variables, files, ... We are betting to use 'text-only' interactions : fewer features but deployment is easier. This is possible thanks to LLM and Agent.
+- [jupyter-code-executor-mcp-server](https://github.com/twn39/jupyter-code-executor-mcp-server) : MCP server that allows to manage multi-kernels. Deals with notebooks and not with kernels directly.
+
+The difference between these projects and silik-kernel is the fact that we wrapped the Kernel Manager itself in a Jupyter Kernel. Moreover, the interaction with sub-kernels is not necessarly made by LLMs through an MCP server (as in [jupyter-kernel-mcp](https://github.com/codewithcheese/jupyter-kernel-mcp)) - kernels can be managed by humans first, and LLMs after :-).
+
+Both [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server) and [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/) interacts with notebooks. We propose here an interaction at a lower level : directly with the jupyter-kernel. Instead of using high-level commands to manage kernels (like [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/)), we use a lightweight bash-like language. This allows to reuse existing jupyter messaging protocol for multi-kernel management (and hence branching any front-end to it). In [SoS](https://vatlab.github.io/sos-docs/), the interaction between kernels is dealt with a protocol that allows to share variables, files, ...
+
+> We are betting here to use 'text-only' interactions : fewer features but deployment is easier. This is possible thanks to LLM and Agent.
 
 ## Help
 
 • cd :
-Moves the cursor of the selected kernel within the kernel tree.
+
+        Moves the cursor of the selected kernel within the kernel tree.
 
         Example :
         ---
@@ -157,9 +164,10 @@ Moves the cursor of the selected kernel within the kernel tree.
                 selected kernel
 
 • mkdir :
-Starts a new kernel, from the root of the selected kernel.
-Use tab completion or send 'kernels' command to see the
-list of availabel kernels.
+
+        Starts a new kernel, from the root of the selected kernel.
+        Use tab completion or send 'kernels' command to see the
+        list of availabel kernels.
 
         Examples :
         ---
@@ -183,7 +191,8 @@ list of availabel kernels.
             - label (flag) : the label of the started kernel
 
 • ls :
-Display the tree of kernels.
+
+        Display the tree of kernels.
 
         Example :
         ---
@@ -196,7 +205,8 @@ Display the tree of kernels.
             ╰─ coder [code-helper]
 
 • restart :
-Restart the selected kernel.
+
+        Restart the selected kernel.
 
         Example :
         ---
@@ -205,7 +215,8 @@ Restart the selected kernel.
             Out[1]: Restarted kernel py
 
 • kernels :
-Returns the list of available kernel that can be started from silik.
+
+        Returns the list of available kernel that can be started from silik.
 
         Example :
         ---
@@ -213,7 +224,8 @@ Returns the list of available kernel that can be started from silik.
             Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
 
 • history :
-Display the history of the selected kernel.
+
+        Display the history of the selected kernel.
 
         Example :
         ---
@@ -221,8 +233,9 @@ Display the history of the selected kernel.
             Out[1]: [[0, 1, "x=19"], [0, 1, "print(x)"]]
 
 • run :
-Send a message to the active sub kernel. Returns the result through
-IOPub channel.
+
+        Send a message to the active sub kernel. Returns the result through
+        IOPub channel.
 
         Example :
         ---
@@ -234,7 +247,8 @@ IOPub channel.
             - cmd (positional): The command to be run.
 
 • help :
-Display the help message.
+
+        Display the help message.
 
         Parameters :
         ---
@@ -259,9 +273,10 @@ Display the help message.
                         - path (positional): the path (relative or absolute) towards the text file
 
 • source :
-Execute the content of a text file on the silik kernel.
-The text file is located on the filesystem where the kernel runs.
-Relative paths are from where you started the jupyter kernel.
+
+        Execute the content of a text file on the silik kernel.
+        The text file is located on the filesystem where the kernel runs.
+        Relative paths are from where you started the jupyter kernel.
 
         The content must be commands that can be run on silik.
         Multiline commands are supported.
@@ -285,9 +300,10 @@ Relative paths are from where you started the jupyter kernel.
             - path (positional): the path (relative or absolute) towards the text file
 
 • cat :
-Display the content of a text file. The text file is located on the
-filesystem where the kernel runs. Relative paths are from where you started
-the jupyter kernel.
+
+        Display the content of a text file. The text file is located on the
+        filesystem where the kernel runs. Relative paths are from where you started
+        the jupyter kernel.
 
         Example :
         ---

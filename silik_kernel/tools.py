@@ -10,7 +10,7 @@ from pathlib import Path
 import logging
 from typing import Literal, List, Optional, Callable, Annotated, Tuple
 from statikomand import KomandParser
-from statikomand.komand_parser import ParsedKomandArgs
+from argparse import Namespace
 
 ALL_KERNELS_LABELS = [
     "lama",
@@ -68,12 +68,7 @@ class KernelMetadata:
     label: str
     type: str
     id: str
-    is_branched_to: "KernelMetadata | None" = None
-    branch_trust_level: Literal[0, 1, 2] = 0  # trust level of branched kernel
-    # 0 = no trust, each cell is asked for validation before being sent to the sub kernel
-    # 1 = trust but watch, each cell is displayed to the user but is still automatically sent to the sub kernel
-    # 2 = full trust, each cell is automatically sent to the sub-kernel, and not sent to the user
-    sandbox: dict = field(default_factory=dict)
+    connection_file: Optional[str] = None
 
 
 @dataclass
@@ -114,21 +109,9 @@ class KernelTreeNode:
 
             # Iterate over children and build the representation recursively
             for index, child in enumerate(node.children):
-                if child.value == node.value.is_branched_to:
-                    result.append(
-                        str_from_node(
-                            child,
-                            new_prefix,
-                            index == len(node.children) - 1,
-                            ">",
-                        ),
-                    )
-                else:
-                    result.append(
-                        str_from_node(
-                            child, new_prefix, index == len(node.children) - 1
-                        )
-                    )
+                result.append(
+                    str_from_node(child, new_prefix, index == len(node.children) - 1)
+                )
 
             return "".join(result)  # Join the list into a single string
 
@@ -150,51 +133,10 @@ class SilikCommandArgs:
         pass
 
 
-class SilikCommandParser:
-    def __init__(
-        self, positionals: list[str] | None = None, flags: list[str] | None = None
-    ):
-        self.positionals = positionals if positionals is not None else []
-        self.flags = flags if flags is not None else []
-
-    def parse(self, components):
-        # Create an argument object
-        arg_obj = SilikCommandArgs()
-        for each_positional in self.positionals:
-            arg_obj.__setattr__(each_positional, False)
-        for each_flag in self.flags:
-            arg_obj.__setattr__(each_flag, False)
-
-        positional_idx = 0
-        # Handle parameters and flags
-        for component in components:
-            if component.startswith("--"):
-                # Handle flags
-                if "=" in component:
-                    key, value = component[2:].split("=", 1)
-                    if key in self.flags:
-                        arg_obj.__setattr__(key, value)
-                    else:
-                        raise ValueError(f"Unknown flag '{key}'")
-                else:
-                    key = component[2:]
-                    if key in self.flags:
-                        arg_obj.__setattr__(key, True)
-                    else:
-                        raise ValueError(f"Unknown flag '{key}'")
-            else:
-                arg_obj.__setattr__(
-                    self.positionals[positional_idx], component
-                )  # Store the value or process as needed
-                positional_idx += 1
-
-        return arg_obj
-
-
 @dataclass
 class SilikCommand:
     handler: Annotated[
-        Callable[[ParsedKomandArgs], Tuple[ExecutionResult, IOPubMsg]],
+        Callable[[Namespace], Tuple[ExecutionResult, IOPubMsg]],
         "Method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg)",
     ]
     parser: KomandParser

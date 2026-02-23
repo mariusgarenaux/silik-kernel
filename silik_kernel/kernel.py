@@ -1,9 +1,10 @@
 # Basic python dependencies
 import os
+import shlex
 from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, List
 
 # Internal dependencies
 from .tools import (
@@ -51,19 +52,8 @@ class SilikBaseKernel(Kernel):
 
     The silik-kernel makes basic operations to properly start and
     stop sub-kernels, as well as providing helper functions to distribute
-    code to sub-kernels through appropriate jupyter kernel channels.
-
-    You can subclass this kernel in order to define custom strategies
-    for :
-        - sending messages to sub-kernels
-        - merging outputs and errors of sub-kernels outputs
-        - sending context (input and outputs of cells) to sub-kernels
-
-    For example, you can implement a custom algorithm that makes
-    a majority vote between several chatbot-kernels outputs, or
-    create a workflow between kernels. You can also create a dynamic
-    strategy that sends code to only one kernel, and share output
-    with all sub-kernels.
+    code to sub-kernels through appropriate jupyter kernel channels. The commands
+    allow to manage kernel with bash-like commands.
     """
 
     implementation = "Silik"
@@ -77,6 +67,7 @@ class SilikBaseKernel(Kernel):
     }
     banner = "Silik Kernel - Multikernel Manager - Run `help` for commands"
     all_kernels_labels: list[str] = ALL_KERNELS_LABELS
+    # help_links: List[dict[str, str]] = [{"text": "", "url": ""}]
     mkm: MultiKernelManager = MultiKernelManager()
 
     def __init__(self, **kwargs):
@@ -393,7 +384,7 @@ class SilikBaseKernel(Kernel):
             args_str = splitted[1]
             self.logger.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
 
-        args = cmd_obj.parser.parse(args_str)
+        args = cmd_obj.parser.parse_args(shlex.split(args_str))
         self.logger.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
         try:
             execution_result, msg = cmd_obj.handler(args)
@@ -651,8 +642,9 @@ class SilikBaseKernel(Kernel):
                 if len(output) > 0:
                     return output
             if self.mode == "cmd":
-                splitted = code.split(" ")
-                self.logger.debug(f"do complete , splitted = {splitted}")
+                ends_with_space = code[-1] == " "
+                splitted = code.split(maxsplit=1)
+                self.logger.debug(f"Splitted code for completion : {splitted}")
                 if len(splitted) == 0:
                     return {
                         "status": "ok",
@@ -661,7 +653,7 @@ class SilikBaseKernel(Kernel):
                         "cursor_end": cursor_pos,
                         "metadata": {},
                     }
-                if len(splitted) == 1:
+                if len(splitted) == 1 and not ends_with_space:
                     return self.complete_first_word(splitted, cursor_pos)
 
                 if cursor_pos != len(code):
@@ -675,18 +667,19 @@ class SilikBaseKernel(Kernel):
 
                 if splitted[0] in self.all_cmds:
                     cmd_name = splitted[0]
-                    word_to_complete = splitted[-1]
-                    self.logger.debug(
-                        f"Completing command {cmd_name} | {word_to_complete}"
-                    )
-                    all_matches = self.all_cmds[cmd_name].parser.do_complete(
-                        word_to_complete
-                    )
+                    arg_str = splitted[1] if len(splitted) > 1 else " "
+                    args = shlex.split(arg_str)
+                    if ends_with_space:  # shlex remove space, but we add an empty str
+                        # to have completion even for empty strings
+                        args += [""]
+                    self.logger.debug(f"Completing token list {args}")
+                    all_matches = self.all_cmds[cmd_name].parser.complete(args)
+                    self.logger.debug(f"Matches {all_matches}")
 
                     return {
                         "status": "ok",
                         "matches": all_matches,
-                        "cursor_start": cursor_pos - len(word_to_complete),
+                        "cursor_start": cursor_pos - len(args[-1]),
                         "cursor_end": cursor_pos,
                         "metadata": {},
                     }
@@ -737,8 +730,18 @@ class SilikBaseKernel(Kernel):
         Shutdown the kernel by simply shutting down all sub kernels
         started.
         """
+        for each_kernel in self.all_kernels:
+            connection_file = each_kernel.connection_file
+            if connection_file is not None:
+                filename = Path(connection_file).name
+                if filename.endswith(".json") and filename.startswith("kernel"):
+                    self.logger.info(
+                        f"Removing kernel connection file : {connection_file}"
+                    )
+                    os.remove(connection_file)
+
         self.mkm.shutdown_all()
-        return {"status": "ok", "restart": restart}
+        return super().do_shutdown(restart)
 
     # ------------------------------------------------------ #
     # ------------- tools for executing code --------------- #
@@ -967,7 +970,12 @@ class SilikBaseKernel(Kernel):
         new_kernel = KernelMetadata(label=kernel_label, type=kernel_name, id=kernel_id)
         self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.given_labels.append(kernel_label)
+        connection_file = os.path.abspath(
+            self.mkm.get_kernel(kernel_id).connection_file
+        )
         self.logger.debug(f"Successfully started kernel {new_kernel}")
+        self.logger.debug(f"Connection file for kernel : {connection_file}")
+        new_kernel.connection_file = connection_file
         return new_kernel
 
     def send_code_to_sub_kernel(
@@ -1027,9 +1035,9 @@ class SilikBaseKernel(Kernel):
         self.logger.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
 
         while True:
-            msg: JupyterMessage = (
-                kc.get_iopub_msg()  # pyright: ignore[reportAssignmentType]
-            )
+            msg: JupyterMessage = kc.get_iopub_msg(
+                timeout=5
+            )  # pyright: ignore[reportAssignmentType]
             self.logger.debug(f"Received msg : {msg}")
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
@@ -1063,34 +1071,6 @@ class SilikBaseKernel(Kernel):
                     "payload": [],
                     "user_expressions": {},
                 }, msg
-
-        # if sub_kernel.is_branched_to is not None and "execute_result" in output:
-        #     raw_output = output["execute_result"]["data"]["text/plain"]
-        #     self.logger.debug(
-        #         f"Sending output : `{raw_output}` of {sub_kernel.label} to {sub_kernel.is_branched_to.label}"
-        #     )
-        #     res = self.send_code_to_sub_kernel(
-        #         sub_kernel=sub_kernel.is_branched_to,
-        #         code=raw_output,
-        #         silent=silent,
-        #     )
-        #     self.logger.debug(res)
-        #     return res
-        # kc.stop_channels()
-        # out_content: ErrorContent = {
-        #     "ename": "NotImplementedError",
-        #     "evalue": "",
-        #     "traceback": [f"Message with id {msg_id} returned a unknown message type."],
-        # }
-        # return (
-        #     {
-        #         "status": "error",
-        #         "execution_count": self.execution_count,
-        #         "payload": [],
-        #         "user_expressions": {},
-        #     },
-        #     JupyterMessage,
-        # )
 
     # ------------------------------------------------------ #
     # ----------------- COMMANDS HANDLERS ------------------ #
@@ -1508,6 +1488,25 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
+    def info_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": self.active_kernel.connection_file},
+            "metadata": {},
+        }
+
+    def complete_help_cmd(self, word, rank):
+        return self.complete_cmd_name(word)
+
+    def complete_kernels_cmd(self, word, rank):
+        self.logger.debug(f"Completing kernels : {word}, {rank}")
+        return self.complete_kernel_type(word)
+
     def complete_kernel_type(self, word: str):
         """
         Finds all kernel type that starts like 'word', and
@@ -1622,65 +1621,84 @@ class SilikBaseKernel(Kernel):
                 all_matches.append(each_child.value.label)
         return all_matches
 
+    def complete_source_cmd(self, word: str, rank: int | None):
+        matches = self.complete_filesystem_path(word)
+        self.logger.debug(f"Completing path : {word}")
+        if matches is None:
+            return [word]
+        else:
+            return matches
+
+    def complete_cd_cmd(self, word: str, rank: int | None) -> list[str]:
+        matches = self.complete_path(word)
+        if matches is None:
+            return [word]
+        else:
+            return matches
+
+    def complete_cat_cmd(self, word: str, rank: int | None) -> list[str]:
+        matches = self.complete_path(word)
+        if matches is None:
+            return [word]
+        else:
+            return matches
+
     def init_commands(self):
         """
         Define all commands of silik programming language.
         """
-        cd_parser = KomandParser()
-        cd_parser.add_argument("path", label="path", completer=self.complete_path)
+        cd_parser = KomandParser("cd")
+        cd_parser.add_argument("path", completer=self.complete_cd_cmd)
         cd_cmd = SilikCommand(self.cd_cmd_handler, cd_parser)
 
-        mkdir_parser = KomandParser()
-        mkdir_parser.add_argument(
-            "kernel_type", label="kernel_type", completer=self.complete_kernel_type
-        )
-        mkdir_parser.add_argument("--label", "-l", label="label")
+        mkdir_parser = KomandParser("mkdir")
+        mkdir_parser.add_argument("kernel_type", completer=self.complete_kernels_cmd)
+        mkdir_parser.add_argument("--label", "-l")
         mkdir_cmd = SilikCommand(self.mkdir_cmd_handler, mkdir_parser)
 
-        ls_parser = KomandParser()
+        ls_parser = KomandParser("ls")
         ls_cmd = SilikCommand(self.ls_cmd_handler, ls_parser)
 
-        restart_parser = KomandParser()
+        restart_parser = KomandParser("restart")
         restart_cmd = SilikCommand(self.restart_cmd_handler, restart_parser)
 
-        run_parser = KomandParser()
-        run_parser.add_argument("cmd", label="cmd")
+        run_parser = KomandParser("run")
+        run_parser.add_argument("cmd")
         run_cmd = SilikCommand(self.run_cmd_handler, run_parser)
 
-        kernels_parser = KomandParser()
+        kernels_parser = KomandParser("kernels")
         kernels_cmd = SilikCommand(self.kernels_cmd_handler, kernels_parser)
 
-        history_parser = KomandParser()
+        info_parser = KomandParser("info")
+        info_cmd = SilikCommand(self.info_cmd_handler, info_parser)
+
+        history_parser = KomandParser("history")
         history_cmd = SilikCommand(self.history_cmd_handler, history_parser)
 
-        branch_parser = KomandParser()
-        branch_parser.add_argument(
-            "kernel_label", label="kernel_label", completer=self.complete_child_label
-        )
-        branch_parser.add_argument("--trust", "-t", label="trust_level")
-        branch_cmd = SilikCommand(self.branch_cmd_handler, branch_parser)
+        # branch_parser = KomandParser("branch")
+        # branch_parser.add_argument(
+        #     "kernel_label", label="kernel_label", completer=self.complete_child_label
+        # )
+        # branch_parser.add_argument("--trust", "-t", label="trust_level")
+        # branch_cmd = SilikCommand(self.branch_cmd_handler, branch_parser)
 
-        detach_parser = KomandParser()
-        detach_cmd = SilikCommand(self.detach_cmd_handler, detach_parser)
+        # detach_parser = KomandParser("detach")
+        # detach_cmd = SilikCommand(self.detach_cmd_handler, detach_parser)
 
-        help_parser = KomandParser()
-        help_parser.add_argument("--cmd", label="cmd", completer=self.complete_cmd_name)
+        help_parser = KomandParser("help")
+        help_parser.add_argument("--cmd", completer=self.complete_help_cmd)
         help_cmd = SilikCommand(self.help_cmd_handler, help_parser)
 
-        exit_parser = KomandParser()
-        exit_parser.add_argument("--restart", label="restart")
-        exit_cmd = SilikCommand(self.exit_cmd_handler, exit_parser)
+        # exit_parser = KomandParser()
+        # exit_parser.add_argument("--restart", label="restart")
+        # exit_cmd = SilikCommand(self.exit_cmd_handler, exit_parser)
 
-        source_parser = KomandParser()
-        source_parser.add_argument(
-            "path", label="path", completer=self.complete_filesystem_path
-        )
+        source_parser = KomandParser("source")
+        source_parser.add_argument("path", completer=self.complete_source_cmd)
         source_cmd = SilikCommand(self.source_cmd_handler, source_parser)
 
-        cat_parser = KomandParser()
-        cat_parser.add_argument(
-            "path", label="path", completer=self.complete_filesystem_path
-        )
+        cat_parser = KomandParser("cat")
+        cat_parser.add_argument("path", completer=self.complete_cat_cmd)
         cat_cmd = SilikCommand(self.cat_cmd_handler, cat_parser)
 
         self.all_cmds: dict[str, SilikCommand] = {
@@ -1690,6 +1708,7 @@ class SilikBaseKernel(Kernel):
             # "tree": ls_cmd,
             "restart": restart_cmd,
             "kernels": kernels_cmd,
+            "info": info_cmd,
             "history": history_cmd,
             # "branch": branch_cmd,
             # "detach": detach_cmd,
