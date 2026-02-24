@@ -297,7 +297,7 @@ Both [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server) and [
 
         Parameters :
         ---
-            - path (positional): the path (relative or absolute) towards the text file.
+            - path (positional): the path (relative or absolute) towards the text file
 
 • cat :
 

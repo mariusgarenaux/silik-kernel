@@ -1036,7 +1036,7 @@ class SilikBaseKernel(Kernel):
 
         while True:
             msg: JupyterMessage = kc.get_iopub_msg(
-                timeout=5
+                timeout=30
             )  # pyright: ignore[reportAssignmentType]
             self.logger.debug(f"Received msg : {msg}")
             if msg["parent_header"].get("msg_id") != msg_id:
@@ -1318,6 +1318,9 @@ class SilikBaseKernel(Kernel):
 
         """
         content = self.get_kernel_history(self.active_kernel.id)
+        out = ""
+        for k, each_cell in enumerate(content):
+            out += f"------- {k} -------\n\n{each_cell[2]}\n\n"
 
         return {
             "status": "ok",
@@ -1326,7 +1329,7 @@ class SilikBaseKernel(Kernel):
             "user_expressions": {},
         }, {
             "execution_count": self.execution_count,
-            "data": {"text/plain": content},
+            "data": {"text/plain": out},
             "metadata": {},
         }
 
@@ -1637,7 +1640,7 @@ class SilikBaseKernel(Kernel):
             return matches
 
     def complete_cat_cmd(self, word: str, rank: int | None) -> list[str]:
-        matches = self.complete_path(word)
+        matches = self.complete_filesystem_path(word)
         if matches is None:
             return [word]
         else:
