@@ -43,9 +43,17 @@ def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
     log_dir = Path(log_dir).expanduser()
     if not os.path.isdir(log_dir):
         raise Exception(f"Please create a dir for kernel logs at {log_dir}")
+    logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL")
+    logging_level_str = logging_level_env if logging_level_env is not None else "DEBUG"
+    logging_level = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+    }.get(logging_level_str, logging.DEBUG)
 
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging_level)
     logger.propagate = False
 
     if not logger.handlers:
