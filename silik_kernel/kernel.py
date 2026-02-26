@@ -1,6 +1,7 @@
 # Basic python dependencies
 import os
 import shlex
+import json
 from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
@@ -33,7 +34,7 @@ from jupyter_client.manager import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.0"
+SILIK_VERSION = "1.6.1"
 
 
 class SilikBaseKernel(Kernel):
@@ -1162,7 +1163,7 @@ class SilikBaseKernel(Kernel):
 
         self.active_node.add_children(new_kernel)
         self.all_kernels.append(new_kernel)
-        content = self.tree.tree_to_str(self.current_dir)
+        content = self.active_node.path
 
         return {
             "status": "ok",
@@ -1187,7 +1188,7 @@ class SilikBaseKernel(Kernel):
             ├─ chatbots
             │  ├─ qwen4b-dist.txt
             │  ╰─ qwen1b7-local.txt
-            ╰─ python <<
+            ╰─ python
                 ╰─ k1.py
         """
         content = self.active_node.tree_to_str()
@@ -1526,8 +1527,9 @@ class SilikBaseKernel(Kernel):
 
     def info_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         """
-        Returns the path to the connection file of a kernel. The connection
-        file stores information for frontends to connects to this kernel.
+        Returns informations about a kernel. Returns the result of a kernel_info_reply,
+        see :
+        https://jupyter-client.readthedocs.io/en/stable/messaging.html#kernel-info
 
         Positional arguments :
         ---
@@ -1541,11 +1543,68 @@ class SilikBaseKernel(Kernel):
             ╰─ k1.py
 
             In [2]: info k1.py
-            Out[2]: /Users/username/silik/kernel-1786bfbe-3925-44bc-81e9-0fc1014d8ea6.json
+            Out[2]:
+            {
+                "status": "ok",
+                "protocol_version": "5.3",
+                "implementation": "ipython",
+                "implementation_version": "9.8.0",
+                "language_info": {
+                    "name": "python",
+                    "version": "3.12.12",
+                    "mimetype": "text/x-python",
+                    "codemirror_mode": {
+                        "name": "ipython",
+                        "version": 3
+                    },
+                    "pygments_lexer": "ipython3",
+                    "nbconvert_exporter": "python",
+                    "file_extension": ".py"
+                },
+                "banner": "Python 3.12.12 (main, Oct 14 2025, 21:38:21) [Clang 20.1.4 ]\nType 'copyright', 'credits' or 'license' for more information\nIPython 9.8.0 -- An enhanced Interactive Python. Type '?' for help.\nTip: Put a ';' at the end of a line to suppress the printing of output.\n",
+                "help_links": [...],
+                "supported_features": [...]
+            }
         """
         kernel = self.active_node.find_node_value_from_path(args.path)
         if not isinstance(kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": json.dumps(kernel.kernel_info, indent=4)},
+            "metadata": {},
+        }
+
+    def connection_file_cmd_handler(
+        self, args
+    ) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Returns the path to the connection file kernel.
+
+        Positional arguments :
+        ---
+            • path (str) : the path to the kernel to which get connection file
+                path
+
+
+        Example :
+        ---
+            In [1]: start python3 -l k1
+            Out[1]:
+            ╰─ k1.py
+
+            In [2]: connection_file k1.py
+            Out[2]: /Users/mgg/silik-kernel/kernel-86a19659-4598-4c82-9bc2-c2595310cf2c.json
+        """
+        kernel = self.active_node.find_node_value_from_path(args.path)
+        if not isinstance(kernel, KernelMetadata):
+            raise ValueError(f"Could not find kernel located at {args.path}")
+
         return {
             "status": "ok",
             "execution_count": self.execution_count,
@@ -1875,11 +1934,21 @@ class SilikBaseKernel(Kernel):
 
         pwd_parser = KomandParser("pwd")
         pwd_cmd = SilikCommand(self.pwd_cmd_handler, pwd_parser)
+
+        connection_file_parser = KomandParser("connection_file")
+        connection_file_parser.add_argument(
+            "path", completer=self.complete_local_path_arg
+        )
+        connection_file_cmd = SilikCommand(
+            self.connection_file_cmd_handler, connection_file_parser
+        )
+
         self.all_cmds: dict[str, SilikCommand] = {
             "kernels": kernels_cmd,
             "start": start_kernel_cmd,
             "restart": restart_cmd,
             "info": info_cmd,
+            "connection_file": connection_file_cmd,
             "history": history_cmd,
             "run": run_cmd,
             "source": source_cmd,
