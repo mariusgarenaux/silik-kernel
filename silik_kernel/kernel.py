@@ -101,6 +101,8 @@ class SilikBaseKernel(Kernel):
         self.active_kernel: KernelMetadata = self.kernel_metadata
         self.all_kernels: list[KernelMetadata] = []
 
+        self.prettify = True
+
         self.init_commands()
 
         self.given_labels = []
@@ -1054,8 +1056,8 @@ class SilikBaseKernel(Kernel):
 
         Positional arguments :
         ---
-            • path (str): the path (relative or absolute) towards the new
-                directory
+            • path (str | None): the path (relative or absolute) towards the new
+                directory. If None, go back to home directory (~)
 
         Example :
         ---
@@ -1073,16 +1075,19 @@ class SilikBaseKernel(Kernel):
 
             In [4]: tree
             Out[4]:
-            ├─ chatbots <<
-            │  ├─ qwen4b-dist.txt
-            │  ╰─ qwen1b7-local.txt
-            ╰─ python
-               ╰─ k1.py
+            chatbots
+            ├─ qwen4b-dist.txt
+            ╰─ qwen1b7-local.txt
+
         """
+        found_value = None
         if args.path is None:
             found_value = self.tree.value
-        else:
-            found_value = self.active_node.find_node_value_from_path(args.path)
+        elif isinstance(args.path, list):
+            if len(args.path) == 0:
+                found_value = self.tree.value
+            else:
+                found_value = self.active_node.find_node_value_from_path(args.path[0])
 
         if found_value is None:
             raise ValueError(f"Could not find kernel located at {args.path}")
@@ -1172,20 +1177,20 @@ class SilikBaseKernel(Kernel):
 
     def tree_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         """
-        Display the whole tree (directories and kernels). The current directory is
-        displayed with '<<' at its right.
+        Display the whole tree (directories and kernels) from the current node.
 
         Example :
         ---
             In [2]: tree
             Out[2]:
+            ~
             ├─ chatbots
             │  ├─ qwen4b-dist.txt
             │  ╰─ qwen1b7-local.txt
             ╰─ python <<
                 ╰─ k1.py
         """
-        content = self.tree.tree_to_str(self.current_dir)
+        content = self.active_node.tree_to_str()
         return {
             "status": "ok",
             "execution_count": self.execution_count,
@@ -1558,25 +1563,39 @@ class SilikBaseKernel(Kernel):
 
         Positional arguments :
         ---
-            • path (str): the path to the directory
+            • path (str | None): the path to the directory. If None,
+                displays the content of the current dir.
 
         Example :
         ---
-            In [2]: tree
-            Out[2]:
+            In [11]: tree
+            Out[11]:
+            ~
             ├─ chatbots
             │  ├─ qwen4b-dist.txt
             │  ╰─ qwen1b7-local.txt
-            ╰─ python <<
+            ╰─ python
                ╰─ k1.py
 
 
-            In [3]: ls ../chatbots/
-            Out[3]:
-            ├─ qwen4b-dist.txt
-            ╰─ qwen1b7-local.txt
+            In [12]: cd chatbots/
+            Out[12]: ~/chatbots/
+
+            In [13]: ls
+            Out[13]:
+            qwen4b-dist.txt
+            qwen1b7-local.txt
         """
-        target_node = self.active_node.find_node_from_path(args.path)
+
+        target_node = None
+        if args.path is None:
+            target_node = self.active_node
+        elif isinstance(args.path, list):
+            if len(args.path) == 0:
+                target_node = self.active_node
+            else:
+                target_node = self.active_node.find_node_from_path(args.path[0])
+
         if target_node is None:
             raise ValueError(f"Could not find any folder at {args.path}")
 
@@ -1592,7 +1611,34 @@ class SilikBaseKernel(Kernel):
             "user_expressions": {},
         }, {
             "execution_count": self.execution_count,
-            "data": {"text/plain": target_node.tree_to_str()},
+            "data": {"text/plain": target_node.childrens_to_str()},
+            "metadata": {},
+        }
+
+    def pwd_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+        """
+        Prints the current working directory (path from ~).
+
+        Example :
+        ---
+            In [8]: tree
+            Out[8]:
+            chatbots
+            ├─ qwen4b-dist.txt
+            ╰─ qwen1b7-local.txt
+
+
+            In [9]: pwd
+            Out[9]: ~/chatbots/
+        """
+        return {
+            "status": "ok",
+            "execution_count": self.execution_count,
+            "payload": [],
+            "user_expressions": {},
+        }, {
+            "execution_count": self.execution_count,
+            "data": {"text/plain": self.active_node.path},
             "metadata": {},
         }
 
@@ -1748,6 +1794,7 @@ class SilikBaseKernel(Kernel):
         Complete the path to either a directory or a kernel
         """
         matches = self.complete_path(word)
+        self.logger.debug(f"Matches from local path : {matches}")
         if matches is None:
             return [word]
         else:
@@ -1765,7 +1812,7 @@ class SilikBaseKernel(Kernel):
         Define all commands of silik programming language.
         """
         cd_parser = KomandParser("cd")
-        cd_parser.add_argument("path", completer=self.complete_local_dir_arg)
+        cd_parser.add_argument("path", nargs="*", completer=self.complete_local_dir_arg)
         cd_cmd = SilikCommand(self.cd_cmd_handler, cd_parser)
 
         mkdir_parser = KomandParser("mkdir")
@@ -1809,7 +1856,9 @@ class SilikBaseKernel(Kernel):
         )
 
         ls_parser = KomandParser("ls")
-        ls_parser.add_argument("path", completer=self.complete_local_path_arg)
+        ls_parser.add_argument(
+            "path", nargs="*", completer=self.complete_local_path_arg
+        )
         ls_cmd = SilikCommand(self.ls_cmd_handler, ls_parser)
 
         source_parser = KomandParser("source")
@@ -1824,6 +1873,8 @@ class SilikBaseKernel(Kernel):
         gateway_parser.add_argument("path", completer=self.complete_local_path_arg)
         gateway_cmd = SilikCommand(self.gateway_cmd_handler, gateway_parser)
 
+        pwd_parser = KomandParser("pwd")
+        pwd_cmd = SilikCommand(self.pwd_cmd_handler, pwd_parser)
         self.all_cmds: dict[str, SilikCommand] = {
             "kernels": kernels_cmd,
             "start": start_kernel_cmd,
@@ -1839,5 +1890,6 @@ class SilikBaseKernel(Kernel):
             "mkdir": mkdir_cmd,
             "cd": cd_cmd,
             "ls": ls_cmd,
+            "pwd": pwd_cmd,
             "help": help_cmd,
         }

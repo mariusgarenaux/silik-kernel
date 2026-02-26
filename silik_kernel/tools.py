@@ -67,6 +67,10 @@ def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
     return logger
 
 
+pretty_display = os.getenv("SILIK_KERNEL_PRETTY_DISPLAY")
+PRETTY_DISPLAY = True if pretty_display in ["True", "true", "1", 1] else False
+
+
 @dataclass
 class NodeValue:
     """
@@ -104,6 +108,12 @@ class KernelFolder(NodeValue):
     label: str
     id: str
 
+    def __str__(self) -> str:
+        if PRETTY_DISPLAY:
+            return f"\033[1;96m{self.label}\033[0m"
+        else:
+            return self.label
+
 
 @dataclass
 class TreeNode:
@@ -127,6 +137,13 @@ class TreeNode:
         for child in self.children:
             child.parent = self
 
+    def childrens_to_str(self):
+        output = ""
+        for child in self.children:
+            output += f"{child.value}\n"
+
+        return output
+
     def tree_to_str(self, pinned_node: NodeValue | None = None):
         def str_from_node(
             node: TreeNode,
@@ -137,9 +154,15 @@ class TreeNode:
             # Initialize the representation of the tree as a list
             result = []
 
+            # if pinned_node is not None and node.value == pinned_node:
+            #     if PRETTY_DISPLAY:
+            #         displayed_label = (
+            #             f"{label_decorator} \033[1;96m{node.value.label}\033[0m"
+            #         )
+            #     else:
+            #         displayed_label = f"{label_decorator} {node.value} <<"
+            # else:
             displayed_label = f"{label_decorator} {node.value}"
-            if pinned_node is not None and node.value == pinned_node:
-                displayed_label += " <<"
 
             result.append(f"{prefix}{'╰─' if is_last else '├─'}{displayed_label}\n")
 
@@ -154,7 +177,7 @@ class TreeNode:
 
             return "".join(result)  # Join the list into a single string
 
-        output = []
+        output = [f"{self.value}\n"]
         for index, child in enumerate(self.children):
             output.append(
                 str_from_node(
