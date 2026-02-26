@@ -12,7 +12,11 @@ This is a jupyter kernel that allows to interface with multiple kernels, you can
 
 - list available kernels,
 
-- connect to a living kernel.
+- connect to a living kernel,
+
+- "store" kernels in fictive "directories"
+
+> All of this with simple command lines
 
 A Silik Kernel can be in two modes :
 
@@ -46,7 +50,7 @@ Any jupyter frontend should be able to access the kernel, for example :
 
 To use diverse kernels through silik, you can install some example kernels : [https://github.com/Tariqve/jupyter-kernels](https://github.com/Tariqve/jupyter-kernels). You can also create new agent-based kernel by subclassing [pydantic-ai base kernel](https://github.com/mariusgarenaux/pydantic-ai-kernel).
 
-> You can list the available kernels by running `jupyter kernelspec list` in a terminal. Or with TAB completion of `mkdir` command in a cell of a silik kernel.
+> You can list the available kernels by running `jupyter kernelspec list` in a terminal. Or with TAB completion of `start` command in a cell of a silik kernel.
 
 ## Usage
 
@@ -64,19 +68,18 @@ jupyter console --kernel silik
 Within a cell :
 
 ```bash
-mkdir python3 --label py
-cd py
-run "x = 19"
-run "print(x)"
+start python3 --label k1
+run "x = 19" k1.py
+run "print(x)" k1.py
 ```
 
 For persistent connection :
 
 ```bash
-/cnct
+> k1.py
 ```
 
-> Controls starting with a `/` must not be mixed in the same code cell with other code (they are not the same language). See [below](#usage-guide). Always run `/cnct` in a single cell (same for `/cmd`).
+Now, all cells of silik kernel are directly transmitted to kernel k1.py. Try:
 
 ```bash
 print(x)
@@ -84,19 +87,27 @@ print(x)
 
 ### Usage Guide
 
-To switch between the two modes ('connect' and 'command'), you have to send either `/cnct` or '/cmd'.
+To go from `command` mode to `connect` mode, you have to use the command :
 
-> ‼️ Since `/cmd` and `/cnct` are not commands, they can not be run in multiline cells with command belows - neither with any other language : python, ... ‼️ To run code on sub-kernel in a silik cell, you can use `run "code"` command.
+```bash
+> path_to_kernel
+```
+
+> Since this changes the language of the following cells, it must not be mixed with the language of the kernel you connects to. The `> path_to_kernel` needs to run in a 'silik' cell. And `silik` cells can only contain silik code - not python, R, ... !
+
+To run code on sub-kernel in a silik cell, you can use `run "code" path_to_kernel` command.
 
 The following code :
 
 ```bash
-mkdir python3 --label py
-cd py
-/cnct
+start python3 --label k1
+> k1.py
+1+1
 ```
 
-will display an error; because we are mixing commands (mkdir, cd, ...) and controls (/cnct, /cmd).
+will stop at the second line; and not execute the last line.
+
+> You can not mix languages in a single cell
 
 #### In `command` mode :
 
@@ -114,7 +125,7 @@ In connect mode, silik kernel acts as a gateway to the kernel selected on `comma
 
 ## Recursive
 
-You can start a silik kernel from a silik kernel. But you can only control the children-silik with `run "code"`; and not directly /cmd or /cnct (because these two are catched before by the first silik).
+You can start a silik kernel from a silik kernel. But you can only control the children-silik with `run "code" path_to_sub_silik`; and not directly /cmd (because it is catched before by the first silik).
 
 > You can hence implement your own sub-class of silik kernel, and add any method for spreading silik input to sub-kernels, and merging output of sub-kernels to produce silik output.
 
@@ -138,180 +149,4 @@ Both [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server) and [
 
 ## Help
 
-• cd :
-
-        Moves the cursor of the selected kernel within the kernel tree.
-
-        Example :
-        ---
-            ├─ qwen4b-dist [pydantic_ai] <<
-            │  ╰─ py [python3]
-            ├─ qwen1.7-local [pydantic_ai]
-            ├─ internet [ddgs]
-            ╰─ coder [code-helper]
-
-            In [2]: cd py
-            Out[2]:
-            ├─ qwen4b-dist [pydantic_ai]
-            │  ╰─ py [python3] <<
-            ├─ qwen1.7-local [pydantic_ai]
-            ├─ internet [ddgs]
-            ╰─ coder [code-helper]
-
-        Parameters :
-        ---
-            - path (positional): the path (relative or absolute) towards the new
-                selected kernel
-
-• mkdir :
-
-        Starts a new kernel, from the root of the selected kernel.
-        Use tab completion or send 'kernels' command to see the
-        list of availabel kernels.
-
-        Examples :
-        ---
-            ├─ qwen4b-dist [pydantic_ai] <<
-            ├─ qwen1.7-local [pydantic_ai]
-            ├─ internet [ddgs]
-            ╰─ coder [code-helper]
-
-            In [2]: mkdir python3 --label py
-            Out[2]:
-            ├─ qwen4b-dist [pydantic_ai] <<
-            │  ╰─ py [python3]
-            ├─ qwen1.7-local [pydantic_ai]
-            ├─ internet [ddgs]
-            ╰─ coder [code-helper]
-
-        Parameters :
-        ---
-            - kernel_type (positional) : the type of the kernel which will be started. Must
-                be one of available kernels (see `kernels` command)
-            - label (flag) : the label of the started kernel
-
-• ls :
-
-        Display the tree of kernels.
-
-        Example :
-        ---
-            In [1]: ls
-            Out[1]:
-            ├─ qwen4b-dist [pydantic_ai]
-            │  ╰─ py [python3] <<
-            ├─ qwen1.7-local [pydantic_ai]
-            ├─ internet [ddgs]
-            ╰─ coder [code-helper]
-
-• restart :
-
-        Restart the selected kernel.
-
-        Example :
-        ---
-            ╰─ py [python3] <<
-            In [1]: restart
-            Out[1]: Restarted kernel py
-
-• kernels :
-
-        Returns the list of available kernel that can be started from silik.
-
-        Example :
-        ---
-            In [1]: kernels
-            Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
-
-• history :
-
-        Display the history of the selected kernel.
-
-        Example :
-        ---
-            In [1]: history
-            Out[1]: [[0, 1, "x=19"], [0, 1, "print(x)"]]
-
-• run :
-
-        Send a message to the active sub kernel. Returns the result through
-        IOPub channel.
-
-        Example :
-        ---
-            In [1]: run "1+1"
-            Out[1]: 2
-
-        Parameters :
-        ---
-            - cmd (positional): The command to be run.
-
-• help :
-
-        Display the help message.
-
-        Parameters :
-        ---
-            - cmd (flag): the name of the command
-
-        Example :
-        ---
-            In [2]: help --cmd cat
-            Out[2]:
-            • cat :
-                    Display the content of a text file on the filesystem where the kernel runs.
-
-                    Example :
-                    ---
-                        In [1]: cat ../init.txt
-                        Out[1]:
-                        mkdir python3 --label py
-                        cd py
-
-                    Parameters :
-                    ---
-                        - path (positional): the path (relative or absolute) towards the text file
-
-• source :
-
-        Execute the content of a text file on the silik kernel.
-        The text file is located on the filesystem where the kernel runs.
-        Relative paths are from where you started the jupyter kernel.
-
-        The content must be commands that can be run on silik.
-        Multiline commands are supported.
-
-            <!> : `/cnct` and `/cmd` are control on the silik kernel, not commands;
-                and hence cannot be present in script files
-
-        Example :
-        ---
-            init.txt :
-                ```txt
-                mkdir python3 --label py
-                cd py
-                ```
-            In [1]: source init.txt
-            Out[1]:
-            ╰─ py [python3] <<
-
-        Parameters :
-        ---
-            - path (positional): the path (relative or absolute) towards the text file
-
-• cat :
-
-        Display the content of a text file. The text file is located on the
-        filesystem where the kernel runs. Relative paths are from where you started
-        the jupyter kernel.
-
-        Example :
-        ---
-            In [1]: cat ../init.txt
-            Out[1]:
-            mkdir python3 --label py
-            cd py
-
-        Parameters :
-        ---
-            - path (positional): the path (relative or absolute) towards the text file
+See [help.md](help.md) !
