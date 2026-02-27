@@ -154,14 +154,6 @@ class TreeNode:
             # Initialize the representation of the tree as a list
             result = []
 
-            # if pinned_node is not None and node.value == pinned_node:
-            #     if PRETTY_DISPLAY:
-            #         displayed_label = (
-            #             f"{label_decorator} \033[1;96m{node.value.label}\033[0m"
-            #         )
-            #     else:
-            #         displayed_label = f"{label_decorator} {node.value} <<"
-            # else:
             displayed_label = f"{label_decorator} {node.value}"
 
             result.append(f"{prefix}{'╰─' if is_last else '├─'}{displayed_label}\n")

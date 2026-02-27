@@ -1,6 +1,7 @@
 # Basic python dependencies
 import os
 import shlex
+import textwrap
 import json
 from pathlib import Path
 import traceback
@@ -10,6 +11,7 @@ from typing import Literal, Optional, Tuple, List
 # Internal dependencies
 from .tools import (
     ALL_KERNELS_LABELS,
+    PRETTY_DISPLAY,
     setup_kernel_logger,
     NodeValue,
     TreeNode,
@@ -34,7 +36,7 @@ from jupyter_client.manager import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.1"
+SILIK_VERSION = "1.6.2"
 
 
 class SilikBaseKernel(Kernel):
@@ -691,7 +693,9 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
-    def get_kernel_history(self, kernel_id: UUID | str) -> list:
+    def get_kernel_history(
+        self, kernel_id: UUID | str, output: bool | None = False
+    ) -> list:
         """
         Returns the history of the kernel with kernel_id. Not all kernels
         store their history. See https://jupyter-client.readthedocs.io/en/stable/messaging.html#msging-history
@@ -710,6 +714,9 @@ class SilikBaseKernel(Kernel):
               - (session, line_number, (input, output)),
             depending on whether output was False or True, respectively.
         """
+        if output is None:
+            output = False
+
         if isinstance(kernel_id, UUID):
             kernel_id = str(kernel_id)
         self.logger.debug(f"Getting history for {kernel_id}")
@@ -721,7 +728,7 @@ class SilikBaseKernel(Kernel):
             # Send history request
             msg_id = kc.history(
                 raw=True,
-                output=False,
+                output=output,
                 hist_access_type="range",
                 session=0,
                 start=1,
@@ -895,7 +902,7 @@ class SilikBaseKernel(Kernel):
             msg_type = msg["msg_type"]
             self.logger.debug(f"Message from sub-kernel : `{msg}`")
 
-            if msg_type in ["execute_result", "stream", "display_data"]:
+            if msg_type in ["execute_result", "display_data"]:
                 kc.stop_channels()
                 return {
                     "status": "ok",
@@ -903,6 +910,8 @@ class SilikBaseKernel(Kernel):
                     "payload": [],
                     "user_expressions": {},
                 }, msg
+            if msg_type == "stream":
+                self.send_response(self.iopub_socket, "stream", msg["content"])
 
             if msg_type == "error":
                 kc.stop_channels()
@@ -1285,6 +1294,10 @@ class SilikBaseKernel(Kernel):
         ---
             • path (str) : the path to the kernel that will send its history
 
+        Optional arguments :
+        ---
+            • output (-o, --output): a flag, whether or not displaying cells output
+
         Example :
         ---
             In [1]: start python3 --label k1
@@ -1329,10 +1342,32 @@ class SilikBaseKernel(Kernel):
         if not isinstance(sub_kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
 
-        content = self.get_kernel_history(sub_kernel.id)
+        content = self.get_kernel_history(sub_kernel.id, output=args.output)
         out = ""
-        for k, each_cell in enumerate(content):
-            out += f"------- {k} -------\n\n{each_cell[2]}\n\n"
+        for session, line, code in content:
+            indent = 3
+            if PRETTY_DISPLAY:
+
+                prefix_in = " " * indent + f"\033[0;32mIn [{line}]:\033[0m"
+                prefix_out = " " * indent + f"\033[0;31mOut[{line}]:\033[0m"
+            else:
+                prefix_in = " " * indent + f"In [{line}]:"
+                prefix_out = " " * indent + f"Out[{line}]:"
+            preshift = " " * indent + "│" + " " * 3
+            end_cell = " " * indent + "╰─" + "─" * 30 + "\n"
+            if len(code) == 2:
+                input_code, output = code
+                out += f"{prefix_in}\n{textwrap.indent(input_code, preshift, predicate=lambda line: True)}\n"
+                out += end_cell
+                if output is not None:
+                    out += f"{prefix_out}\n{textwrap.indent(output, preshift, predicate=lambda line: True)}\n"
+                else:
+                    out += f"{prefix_out}\n"
+                out += end_cell
+            else:
+                out += f"{prefix_in}\n{textwrap.indent(code, preshift, predicate=lambda line: True)}\n"
+                out += end_cell
+            out += "\n\n"
 
         return {
             "status": "ok",
@@ -1899,6 +1934,9 @@ class SilikBaseKernel(Kernel):
 
         history_parser = KomandParser("history")
         history_parser.add_argument("path", completer=self.complete_local_path_arg)
+        history_parser.add_argument(
+            "--output", "-o", dest="output", action="store_true"
+        )
         history_cmd = SilikCommand(self.history_cmd_handler, history_parser)
 
         help_parser = KomandParser("help")

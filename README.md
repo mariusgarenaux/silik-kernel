@@ -2,7 +2,7 @@
 
 > A Jupyter Multi Kernel Manager, wrapped in a Jupyter Kernel 🙂 Because "who is more qualified to relay kernel messages than a kernel itself ?"
 
-![](example.gif)
+![](example.mp4)
 
 This is a jupyter kernel that allows to interface with multiple kernels, you can:
 
