@@ -36,7 +36,7 @@ from jupyter_client.manager import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.2"
+SILIK_VERSION = "1.6.3"
 
 
 class SilikBaseKernel(Kernel):
@@ -93,7 +93,7 @@ class SilikBaseKernel(Kernel):
             self.logger = self.log
 
         self.ksm = KernelSpecManager()
-        self.mode: Literal["cmd", "cnct"] = "cmd"
+        self.mode: Literal["command", "connect"] = "command"
         self.current_dir: KernelFolder = KernelFolder(label="~", id=str(uuid4()))
         self.tree: TreeNode = TreeNode(self.current_dir)  # the tree is only the
         # root node, but will be updated with other tree nodes :)
@@ -133,8 +133,8 @@ class SilikBaseKernel(Kernel):
     ) -> ExecutionResult:
         """
         Executes code on this kernel, according to 2 modes :
-            - command mode (/cmd),
-            - connection mode (/cnct).
+            - command mode,
+            - connection mode.
 
         The first one is used to spawn and configure new kernels.
         The second is used to directly connect input of this kernel
@@ -144,42 +144,40 @@ class SilikBaseKernel(Kernel):
         ---
             - code (str) : The code to be executed.
             - silent (bool) : Whether to display output.
-            - store_history (bool) : Whether to record this code in history and increase the execution count. If silent is True, this is implicitly False.
-            - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
-            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
+            - store_history (bool) : Whether to record this code in history and
+                 increases the execution count. If silent is True, this is implicitly False.
+            - user_expressions (dict) : Mapping of names to expressions to evaluate after the
+                 code has run. You can ignore this if you need to.
+            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g.
+                for Python’s raw_input()).
 
         Returns:
         ---
             ExecutionResult, according to Jupyter documentation.
         """
-
-        # first checks for mode switch trigger (command // connect)
         try:
-            first_word_trigger = code.split(maxsplit=1)[0]
-            if first_word_trigger == "/cmd":
-                self.logger.info("Detected switch mode trigger")
-                if first_word_trigger == "/cmd":
-                    self.mode = "cmd"
-                    self.send_response(
-                        self.iopub_socket,
-                        "execute_result",
-                        {
-                            "execution_count": self.execution_count,
-                            "data": {
-                                "text/plain": "Command mode. You can create and select kernels. Send `help` for the list of commands."
-                            },
-                            "metadata": {},
-                        },
-                    )
-                    return {
-                        "status": "ok",
+            if code in ["/cmd", "<"]:
+                self.mode = "command"
+                self.send_response(
+                    self.iopub_socket,
+                    "execute_result",
+                    {
                         "execution_count": self.execution_count,
-                        "payload": [],
-                        "user_expressions": {},
-                    }
+                        "data": {
+                            "text/plain": "Command mode. You can create and select kernels. Send `help` for the list of commands."
+                        },
+                        "metadata": {},
+                    },
+                )
+                return {
+                    "status": "ok",
+                    "execution_count": self.execution_count,
+                    "payload": [],
+                    "user_expressions": {},
+                }
 
             # then either run code, or give it to sub-kernels
-            if self.mode == "cmd":
+            if self.mode == "command":
                 self.logger.info("Running in command mode.")
                 execution_result, msg = self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
@@ -191,7 +189,7 @@ class SilikBaseKernel(Kernel):
                 self.logger.info(f"Output of command : {msg}")
                 return execution_result
 
-            elif self.mode == "cnct":
+            elif self.mode == "connect":
                 execution_result, msg = self.do_execute_on_sub_kernel(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
@@ -230,7 +228,7 @@ class SilikBaseKernel(Kernel):
 
                 return execution_result
             else:
-                self.mode = "cmd"
+                self.mode = "command"
                 return {
                     "status": "error",
                     "execution_count": self.execution_count,
@@ -243,7 +241,7 @@ class SilikBaseKernel(Kernel):
                 "error",
                 {
                     "ename": "SilikExecutionError",
-                    "evalue": "",
+                    "evalue": str(e),
                     "traceback": traceback.format_exception(e),
                 },
             )
@@ -295,7 +293,7 @@ class SilikBaseKernel(Kernel):
             execution_result, msg = self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
-            if self.mode == "cnct":
+            if self.mode == "connect":
                 # if mode has switched during execution
                 # we stop the cell execution, since the
                 # language has changed !
@@ -479,7 +477,7 @@ class SilikBaseKernel(Kernel):
         return execution_result, msg
 
     def do_is_complete(self, code: str):
-        if self.mode == "cnct":
+        if self.mode == "connect":
             km = self.mkm.get_kernel(self.active_kernel.id)
             self.logger.debug(f"Sending is_complete to {self.active_kernel}")
             kc = km.client()
@@ -526,7 +524,7 @@ class SilikBaseKernel(Kernel):
                 return it.
         """
         try:
-            if self.mode == "cnct":
+            if self.mode == "connect":
                 # just act as a gateway towards active kernel
                 km = self.mkm.get_kernel(self.active_kernel.id)
                 self.logger.debug(f"Sending do_complete to {self.active_kernel}")
@@ -562,7 +560,7 @@ class SilikBaseKernel(Kernel):
                 kc.stop_channels()
                 if len(output) > 0:
                     return output
-            if self.mode == "cmd":
+            if self.mode == "command":
                 ends_with_space = code[-1] == " "
                 splitted = code.split(maxsplit=1)
                 self.logger.debug(f"Splitted code for completion : {splitted}")
@@ -984,7 +982,7 @@ class SilikBaseKernel(Kernel):
             In [3]: 1+1
             Out[1]: 2
         """
-        self.mode = "cnct"
+        self.mode = "connect"
 
         node_at_path = self.active_node.find_node_value_from_path(args.path)
         if node_at_path is None:
