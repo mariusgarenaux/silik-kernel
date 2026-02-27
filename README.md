@@ -131,21 +131,27 @@ You can start a silik kernel from a silik kernel. But you can only control the c
 
 ## Similar projects
 
-Existing projects involving multi kernel management already exists :
+Existing projects involving multi-kernel management already exists. The main one is [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/). Silik kernel is very similar to this project. It uses too a "super-kernel" that allows to manage multiple kernels. To summarize, Silik has less features than SoS, but this is useful when it comes to manage multikernel from frontends that have less capabilities than jupyter notebooks.
+
+The differences with silik are :
+
+- the dependency to the notebook format. SoS notebook can be used in any jupyter frontend, but is thought to be used with notebooks. Silik kernel was thought to be used through jupyter-console and/or signal messaging interface : frontends with less features than notebooks.
+
+- beside the fact that Silik kernel is written in python; it does not run python cells as SoS notebook. It just runs silik commands.
+
+- we do not want the powerful data-exchange features of SoS-notebook. Instead, we focus on 'text-only' interactions, and we plan to take advantage of LLM's ability to deal with natural language in order to mix the different kernels. Using a weak interface (text) for kernel interactions gives less features than SoS-notebook, but comes with easier deployment.
+
+More recently, several kernels managers based on MCP ([Model Context Protocol](https://modelcontextprotocol.io/docs/getting-started/intro)) have emerged :
 
 - [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server) : a server that is accessible through the MCP protocol, to manage multiple kernels and notebooks. To our knowledge, the MCP server does not interact with a Jupyter Kernel, but directly manages Kernels.
-
-- [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/) : an other multi-kernel manager, through jupyter notebook. Uses a 'Super Kernel' to manage all sub-kernels. To our knowledge, the Super Kernel is not a Jupyter Kernel.
 
 - [jupyter-kernel-mcp](https://github.com/codewithcheese/jupyter-kernel-mcp): MCP server that allows to manage multi kernels. Unlike [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server), it interact directly with jupyter kernels.
 
 - [jupyter-code-executor-mcp-server](https://github.com/twn39/jupyter-code-executor-mcp-server) : MCP server that allows to manage multi-kernels. Deals with notebooks and not with kernels directly.
 
-The difference between these projects and silik-kernel is the fact that we wrapped the Kernel Manager itself in a Jupyter Kernel. Moreover, the interaction with sub-kernels is not necessarly made by LLMs through an MCP server (as in [jupyter-kernel-mcp](https://github.com/codewithcheese/jupyter-kernel-mcp)) - kernels can be managed by humans first, and LLMs after :-).
+The difference between these projects and silik-kernel is the fact that we wrapped the Kernel Manager itself in a Jupyter Kernel (similarly as SoS-notebooks). This allows to plug any jupyter frontend to the kernel manager.
 
-Both [jupyter-mcp-server](https://github.com/datalayer/jupyter-mcp-server) and [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/) interacts with notebooks. We propose here an interaction at a lower level : directly with the jupyter-kernel. Instead of using high-level commands to manage kernels (like [SoS Polyglot Notebook](https://vatlab.github.io/sos-docs/)), we use a lightweight bash-like language. This allows to reuse existing jupyter messaging protocol for multi-kernel management (and hence branching any front-end to it). In [SoS](https://vatlab.github.io/sos-docs/), the interaction between kernels is dealt with a protocol that allows to share variables, files, ...
-
-> We are betting here to use 'text-only' interactions : fewer features but deployment is easier. This is possible thanks to LLM and Agent.
+Moreover, the interaction with sub-kernels is not necessarly made by LLMs through an MCP server (as in [jupyter-kernel-mcp](https://github.com/codewithcheese/jupyter-kernel-mcp)). Kernels can be managed by humans first, and LLMs after 🙂 : we could easily add an MCP server that calls a silik-kernel if we wanted to control it with LLM's.
 
 ## Help
 
