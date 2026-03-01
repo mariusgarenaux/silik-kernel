@@ -329,8 +329,6 @@ class SilikBaseKernel(Kernel):
         but returns the message that is meant to be send to iopub socket,
         as well as the execution result.
 
-        Made to take into account pipes, >, ...
-
         Parameters :
         ---
             - code (str) : the line of code that will be executed
@@ -518,10 +516,9 @@ class SilikBaseKernel(Kernel):
     def do_complete(self, code: str, cursor_pos: int):
         """
         Tab completion. Two modes :
-            - cnct : gateway towards tab completion of sub kernel
-            - cmd : complete command names from self.all_cmds. TODO :
-                implement tab completion for each command args and
-                return it.
+            - connect : gateway towards tab completion of sub kernel
+            - command : complete command names from self.all_cmds, also completes
+                the commands argument with any function declared as a completer
         """
         try:
             if self.mode == "connect":
@@ -1971,7 +1968,7 @@ class SilikBaseKernel(Kernel):
         pwd_parser = KomandParser("pwd")
         pwd_cmd = SilikCommand(self.pwd_cmd_handler, pwd_parser)
 
-        connection_file_parser = KomandParser("connection_file")
+        connection_file_parser = KomandParser("connect_info")
         connection_file_parser.add_argument(
             "path", completer=self.complete_local_path_arg
         )
@@ -1984,7 +1981,7 @@ class SilikBaseKernel(Kernel):
             "start": start_kernel_cmd,
             "restart": restart_cmd,
             "info": info_cmd,
-            "connection_file": connection_file_cmd,
+            "connect_info": connection_file_cmd,
             "history": history_cmd,
             "run": run_cmd,
             "source": source_cmd,
