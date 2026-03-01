@@ -14,7 +14,7 @@ This is a jupyter kernel that allows to interface with multiple kernels, you can
 
 - connect to a living kernel,
 
-- "store" kernels in fictive "directories"
+- organize all the kernels in fictive "directories"
 
 > All of this with simple command lines
 
@@ -135,7 +135,7 @@ Existing projects involving multi-kernel management already exists. The main one
 
 The differences with silik are :
 
-- the dependency to the notebook format. SoS notebook can be used in any jupyter frontend, but is thought to be used with notebooks. Silik kernel was thought to be used through jupyter-console and/or signal messaging interface : frontends with less features than notebooks.
+- the dependency to the notebook format. SoS notebook can be used in any jupyter frontend, but is thought to be used with notebooks. Silik kernel was thought to be used through jupyter-console and/or signal messaging interface : frontends with less features than notebooks. We propose here a different user-interface for the management of several kernels.
 
 - beside the fact that Silik kernel is written in python; it does not run python cells as SoS notebook. It just runs silik commands.
 
