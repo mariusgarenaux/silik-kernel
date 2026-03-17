@@ -36,7 +36,7 @@ from jupyter_client.manager import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.3"
+SILIK_VERSION = "1.6.4"
 
 
 class SilikBaseKernel(Kernel):
