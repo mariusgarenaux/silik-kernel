@@ -34,37 +34,55 @@ ALL_KERNELS_LABELS = [
 random.shuffle(ALL_KERNELS_LABELS)
 
 
-def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
+def add_custom_logger_handler(
+    logger: logging.Logger, log_dir="~/.jupyter/logs/silik.log"
+):
     """
-    Creates a logger for the kernel. Set up SILIK_KERNEL_LOG environment
-    variable to True before running the kernel, and create the following
-    dir : ~/.silik_logs
+    Add a custom handlers to the metakernel logger; located
+    in ~/.jupyter/logs dir
     """
     log_dir = Path(log_dir).expanduser()
-    if not os.path.isdir(log_dir):
-        raise Exception(f"Please create a dir for kernel logs at {log_dir}")
+    fh = logging.FileHandler(log_dir, encoding="utf-8")
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
     logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL")
     logging_level_str = logging_level_env if logging_level_env is not None else "DEBUG"
-    logging_level = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-    }.get(logging_level_str, logging.DEBUG)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(logging_level)
-    logger.propagate = False
-
-    if not logger.handlers:
-        fh = logging.FileHandler(log_dir / f"{name}.log", encoding="utf-8")
-        fmt = logging.Formatter(
-            f"%(asctime)s | {kernel_id[:5]} | %(levelname)s | %(name)s | %(funcName)s | %(message)s"
-        )
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-
+    logger.setLevel(logging_level_str)
     return logger
+
+
+# def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
+#     """
+#     Creates a logger for the kernel. Set up SILIK_KERNEL_LOG environment
+#     variable to True before running the kernel, and create the following
+#     dir : ~/.silik_logs
+#     """
+#     log_dir = Path(log_dir).expanduser()
+#     if not os.path.isdir(log_dir):
+#         raise Exception(f"Please create a dir for kernel logs at {log_dir}")
+#     logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL")
+#     logging_level_str = logging_level_env if logging_level_env is not None else "DEBUG"
+#     logging_level = {
+#         "DEBUG": logging.DEBUG,
+#         "INFO": logging.INFO,
+#         "WARNING": logging.WARNING,
+#         "ERROR": logging.ERROR,
+#     }.get(logging_level_str, logging.DEBUG)
+
+#     logger = logging.getLogger(name)
+#     logger.setLevel(logging_level)
+#     logger.propagate = False
+
+#     if not logger.handlers:
+#         fh = logging.FileHandler(log_dir / f"{name}.log", encoding="utf-8")
+#         fmt = logging.Formatter(
+#             f"%(asctime)s | {kernel_id[:5]} | %(levelname)s | %(name)s | %(funcName)s | %(message)s"
+#         )
+#         fh.setFormatter(fmt)
+#         logger.addHandler(fh)
+
+#     return logger
 
 
 pretty_display = os.getenv("SILIK_KERNEL_PRETTY_DISPLAY")

@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
-from typing import Literal, Optional, Tuple, List
+from typing import Literal, Optional, Tuple
 
 # Internal dependencies
 from .tools import (
     ALL_KERNELS_LABELS,
     PRETTY_DISPLAY,
-    setup_kernel_logger,
+    add_custom_logger_handler,
     NodeValue,
     TreeNode,
     KernelMetadata,
@@ -84,13 +84,11 @@ class SilikBaseKernel(Kernel):
         should_custom_log = (
             True if should_custom_log in ["True", "true", "1"] else False
         )
-
         if should_custom_log:
-            logger = setup_kernel_logger(__name__, self.ident)
-            logger.info(f"Started kernel {self.ident} and initalized logger")
-            self.logger = logger
-        else:
-            self.logger = self.log
+            add_custom_logger_handler(self.log)
+            self.log.info(f"Started kernel {self.ident} and initalized logger")
+
+        self.log.info(f"Started kernel {self.ident} and initalized logger")
 
         self.ksm = KernelSpecManager()
         self.mode: Literal["command", "connect"] = "command"
@@ -156,6 +154,15 @@ class SilikBaseKernel(Kernel):
             ExecutionResult, according to Jupyter documentation.
         """
         try:
+            if code in ["exit", "exit()", "quit", "quit()"]:
+                # return self.do_shutdown(False)
+                return {
+                    "status": "ok",
+                    "execution_count": self.execution_count,
+                    "payload": [{"source": "ask_exit", "keepkernel": False}],
+                    # "payload": [],
+                    "user_expressions": {},
+                }
             if code in ["/cmd", "<"]:
                 self.mode = "command"
                 self.send_response(
@@ -178,7 +185,7 @@ class SilikBaseKernel(Kernel):
 
             # then either run code, or give it to sub-kernels
             if self.mode == "command":
-                self.logger.info("Running in command mode.")
+                self.log.info("Running in command mode.")
                 execution_result, msg = self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
@@ -186,7 +193,7 @@ class SilikBaseKernel(Kernel):
                     self.send_response(self.iopub_socket, "error", msg)
                 else:
                     self.send_response(self.iopub_socket, "execute_result", msg)
-                self.logger.info(f"Output of command : {msg}")
+                self.log.info(f"Output of command : {msg}")
                 return execution_result
 
             elif self.mode == "connect":
@@ -283,13 +290,13 @@ class SilikBaseKernel(Kernel):
             is meant to be sent to IOPub Socket.
         """
         splitted_code = code.split("\n")
-        self.logger.debug(f"Splitted Multiline Code {splitted_code}")
+        self.log.debug(f"Splitted Multiline Code {splitted_code}")
 
         execution_result, msg = None, None
         for line in splitted_code:
             if line == "":
                 continue
-            self.logger.info(f"Running line : `{line}`")
+            self.log.info(f"Running line : `{line}`")
             execution_result, msg = self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
@@ -350,7 +357,7 @@ class SilikBaseKernel(Kernel):
         """
         splitted = code.split(maxsplit=1)
         if len(splitted) == 0:
-            self.logger.warning(f"Code {code} is empty.")
+            self.log.warning(f"Code {code} is empty.")
             return (
                 {
                     "status": "error",
@@ -365,9 +372,9 @@ class SilikBaseKernel(Kernel):
                 },
             )
         cmd_name = splitted[0]
-        self.logger.debug(f"Splitted command. Command name : `{cmd_name}`.")
+        self.log.debug(f"Splitted command. Command name : `{cmd_name}`.")
         if cmd_name not in self.all_cmds:
-            self.logger.warning(f"Command `{cmd_name}` was not found")
+            self.log.warning(f"Command `{cmd_name}` was not found")
 
             return (
                 {
@@ -386,18 +393,18 @@ class SilikBaseKernel(Kernel):
             )
         cmd_obj = self.all_cmds[cmd_name]
         if len(splitted) <= 1:
-            self.logger.debug(f"No arguments were found for command {cmd_name}")
+            self.log.debug(f"No arguments were found for command {cmd_name}")
             args_str = ""
         else:
             args_str = splitted[1]
-            self.logger.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
+            self.log.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
 
         args = cmd_obj.parser.parse_args(shlex.split(args_str))
-        self.logger.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
+        self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
         try:
             execution_result, msg = cmd_obj.handler(args)
         except Exception as e:
-            self.logger.info(f"Error when running command `{cmd_name}` : `{e}`")
+            self.log.info(f"Error when running command `{cmd_name}` : `{e}`")
             return (
                 {
                     "status": "error",
@@ -412,7 +419,7 @@ class SilikBaseKernel(Kernel):
                 },
             )
 
-        self.logger.debug(f"Output of `{cmd_name}` : `{execution_result}`, `{msg}`")
+        self.log.debug(f"Output of `{cmd_name}` : `{execution_result}`, `{msg}`")
         return execution_result, msg
 
     def do_execute_on_sub_kernel(
@@ -446,7 +453,7 @@ class SilikBaseKernel(Kernel):
             of do_execute method of IPykernel wrapper. The JupyterMessage is the message from
             the jupyter kernel protocol. Straight from sub-kernel.
         """
-        self.logger.info(f"Code is sent to selected kernel : {self.current_dir}")
+        self.log.info(f"Code is sent to selected kernel : {self.current_dir}")
 
         execution_result, msg = self.send_code_to_sub_kernel(
             self.active_kernel,
@@ -456,7 +463,7 @@ class SilikBaseKernel(Kernel):
             user_expressions,
             allow_stdin,
         )
-        self.logger.debug(f"Output of cell : {execution_result, msg}")
+        self.log.debug(f"Output of cell : {execution_result, msg}")
 
         # custom for silent execution : TODO clean display :-)
         # if silent:
@@ -464,7 +471,7 @@ class SilikBaseKernel(Kernel):
         # all_out = []
         # for each_output_type in msg:
         #     # sends content to each channel (error, execution result, ...)
-        #     self.logger.debug(f"Output type {msg[each_output_type]}")
+        #     self.log.debug(f"Output type {msg[each_output_type]}")
         #     if each_output_type == "execute_result":
         #         msg[each_output_type]["data"]["text/plain"] = (
         #             f"{self.active_kernel.label} [{self.active_kernel.type}]\n"
@@ -477,7 +484,7 @@ class SilikBaseKernel(Kernel):
     def do_is_complete(self, code: str):
         if self.mode == "connect":
             km = self.mkm.get_kernel(self.active_kernel.id)
-            self.logger.debug(f"Sending is_complete to {self.active_kernel}")
+            self.log.debug(f"Sending is_complete to {self.active_kernel}")
             kc = km.client()
             kc.start_channels()
             msg = kc.session.msg(
@@ -504,7 +511,7 @@ class SilikBaseKernel(Kernel):
                 elif msg_type == "error":
                     output = msg["content"]
                     break
-            self.logger.debug(f"is_complete from {self.active_kernel.label}: {output}")
+            self.log.debug(f"is_complete from {self.active_kernel.label}: {output}")
             kc.stop_channels()
             if len(output) == 0:
                 return {"status": "unknown"}
@@ -524,7 +531,7 @@ class SilikBaseKernel(Kernel):
             if self.mode == "connect":
                 # just act as a gateway towards active kernel
                 km = self.mkm.get_kernel(self.active_kernel.id)
-                self.logger.debug(f"Sending do_complete to {self.active_kernel}")
+                self.log.debug(f"Sending do_complete to {self.active_kernel}")
                 kc = km.client()
                 kc.start_channels()
                 msg_type = "complete_request"
@@ -551,16 +558,14 @@ class SilikBaseKernel(Kernel):
                     elif msg_type == "error":
                         output = msg["content"]
                         break
-                self.logger.debug(
-                    f"do complete from {self.active_kernel.label}: {output}"
-                )
+                self.log.debug(f"do complete from {self.active_kernel.label}: {output}")
                 kc.stop_channels()
                 if len(output) > 0:
                     return output
             if self.mode == "command":
                 ends_with_space = code[-1] == " "
                 splitted = code.split(maxsplit=1)
-                self.logger.debug(f"Splitted code for completion : {splitted}")
+                self.log.debug(f"Splitted code for completion : {splitted}")
                 if len(splitted) == 0:
                     return {
                         "status": "ok",
@@ -588,9 +593,9 @@ class SilikBaseKernel(Kernel):
                     if ends_with_space:  # shlex remove space, but we add an empty str
                         # to have completion even for empty strings
                         args += [""]
-                    self.logger.debug(f"Completing token list {args}")
+                    self.log.debug(f"Completing token list {args}")
                     all_matches = self.all_cmds[cmd_name].parser.complete(args)
-                    self.logger.info(f"Completion matches : {all_matches}")
+                    self.log.info(f"Completion matches : {all_matches}")
 
                     return {
                         "status": "ok",
@@ -624,7 +629,7 @@ class SilikBaseKernel(Kernel):
                 "metadata": {},
             }
         except Exception as e:
-            self.logger.warning(traceback.format_exception(e))
+            self.log.warning(traceback.format_exception(e))
             return {
                 # status should be 'ok' unless an exception was raised during the request,
                 # in which case it should be 'error', along with the usual error message content
@@ -651,7 +656,7 @@ class SilikBaseKernel(Kernel):
             if connection_file is not None:
                 filename = Path(connection_file).name
                 if filename.endswith(".json") and filename.startswith("kernel"):
-                    self.logger.info(
+                    self.log.info(
                         f"Removing kernel connection file : {connection_file}"
                     )
                     os.remove(connection_file)
@@ -714,7 +719,7 @@ class SilikBaseKernel(Kernel):
 
         if isinstance(kernel_id, UUID):
             kernel_id = str(kernel_id)
-        self.logger.debug(f"Getting history for {kernel_id}")
+        self.log.debug(f"Getting history for {kernel_id}")
         kc = self.mkm.get_kernel(kernel_id).client()
 
         try:
@@ -738,7 +743,7 @@ class SilikBaseKernel(Kernel):
 
                 if msg["msg_type"] == "history_reply":
                     # history = msg["content"]["history"]
-                    self.logger.debug(f"Kernel history : {msg['content']}")
+                    self.log.debug(f"Kernel history : {msg['content']}")
                     return msg["content"]["history"]
         finally:
             kc.stop_channels()
@@ -781,7 +786,7 @@ class SilikBaseKernel(Kernel):
             The KernelMetadata object describing the kernel. None if the label already
             exists.
         """
-        self.logger.debug(f"Starting new kernel of type : {kernel_name}")
+        self.log.debug(f"Starting new kernel of type : {kernel_name}")
         kernel_id = str(uuid4())
         if kernel_label is None:
             if self.kernel_label_rank > len(self.all_kernels_labels):
@@ -793,7 +798,7 @@ class SilikBaseKernel(Kernel):
                 kernel_label = self.all_kernels_labels[self.kernel_label_rank]
                 self.kernel_label_rank += 1
         elif kernel_label in self.given_labels:
-            self.logger.debug("Existing label")
+            self.log.debug("Existing label")
             return
 
         self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
@@ -801,7 +806,7 @@ class SilikBaseKernel(Kernel):
 
         km = self.mkm.get_kernel(kernel_id)
         connection_file = os.path.abspath(km.connection_file)
-        self.logger.debug(f"Connection file for kernel : {connection_file}")
+        self.log.debug(f"Connection file for kernel : {connection_file}")
         kernel_info = self.retrieve_kernel_information(km)
         if kernel_info is not None:
             file_extension = kernel_info.get("language_info", {}).get(
@@ -818,7 +823,7 @@ class SilikBaseKernel(Kernel):
             kernel_info=kernel_info,
             connection_file=connection_file,
         )
-        self.logger.debug(f"Successfully started kernel {new_kernel}")
+        self.log.debug(f"Successfully started kernel {new_kernel}")
         return new_kernel
 
     def send_code_to_sub_kernel(
@@ -864,38 +869,51 @@ class SilikBaseKernel(Kernel):
             "allow_stdin": allow_stdin,
             "stop_on_error": True,
         }
-        self.logger.debug(
+        self.log.debug(
             f"Created channel with sub-kernel. Sending execute request: {content}."
         )
 
-        msg = kc.session.msg(
+        msg_sent = kc.session.msg(
             "execute_request",
             content,
         )
-        kc.shell_channel.send(msg)
-        msg_id = msg["header"]["msg_id"]
+        kc.shell_channel.send(msg_sent)
+        msg_id = msg_sent["header"]["msg_id"]
 
-        self.logger.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
+        self.log.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
 
         while True:
             try:
-                msg: JupyterMessage = kc.get_iopub_msg(
-                    timeout=60
+                msg: JupyterMessage | None = kc.get_iopub_msg(
+                    timeout=0.1
                 )  # pyright: ignore[reportAssignmentType]
-            except Exception as e:
-                error_msg = (
-                    f"IO Pub channel of sub kernel {sub_kernel} timed out (60 sec)."
-                )
-                self.logger.warning(error_msg)
-                kc.stop_channels()
-                raise TimeoutError(error_msg)
+            except Exception:
+                msg = None
 
-            self.logger.debug(f"Received msg : {msg}")
+            try:
+                stdin_msg = kc.get_stdin_msg(timeout=0.1)
+            except Exception:
+                stdin_msg = None
+
+            if stdin_msg is not None:
+                self.log.debug(f"Message from stdin : {stdin_msg}.")
+                self._allow_stdin = True
+                out = self.raw_input(stdin_msg["content"]["prompt"])
+                self._allow_stdin = False
+                self.log.debug(f"out of stdin : {out}")
+                input_reply = kc.session.msg("input_reply", {"value": out})
+                kc.stdin_channel.send(input_reply)
+                continue
+
+            if msg is None:
+                continue
+
+            self.log.debug(f"Received msg : {msg}")
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
 
             msg_type = msg["msg_type"]
-            self.logger.debug(f"Message from sub-kernel : `{msg}`")
+            self.log.info(f"Message from sub-kernel : `{msg}`")
 
             if msg_type in ["execute_result", "display_data"]:
                 kc.stop_channels()
@@ -932,11 +950,11 @@ class SilikBaseKernel(Kernel):
         kernel_info = None
 
         msg_id = kernel_client.kernel_info()
-        self.logger.debug(f"Kernel info message id : `{msg_id}`")
+        self.log.debug(f"Kernel info message id : `{msg_id}`")
         # Send kernel_info_request
         while True:
             msg = kernel_client.get_shell_msg(timeout=5)
-            self.logger.debug(f"Message from shell socket : `{msg}`")
+            self.log.debug(f"Message from shell socket : `{msg}`")
 
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
@@ -951,7 +969,7 @@ class SilikBaseKernel(Kernel):
                     break
 
         kernel_client.stop_channels()
-        self.logger.debug(f"Retrieved kernel informations : `{kernel_info}`")
+        self.log.debug(f"Retrieved kernel informations : `{kernel_info}`")
         return kernel_info
 
     # ------------------------------------------------------ #
@@ -1028,7 +1046,7 @@ class SilikBaseKernel(Kernel):
         cmd_name = None
         try:
             cmd_name = args.cmd
-        except Exception as e:
+        except Exception:
             pass
 
         if cmd_name is None:
@@ -1735,7 +1753,7 @@ class SilikBaseKernel(Kernel):
         return self.complete_cmd_name(word)
 
     def complete_kernels_cmd(self, word, rank):
-        self.logger.debug(f"Completing kernels : {word}, {rank}")
+        self.log.debug(f"Completing kernels : {word}, {rank}")
         return self.complete_kernel_type(word)
 
     def complete_kernel_type(self, word: str):
@@ -1764,7 +1782,7 @@ class SilikBaseKernel(Kernel):
 
     def complete_filesystem_path(self, path: str):
         path_obj = Path(path)
-        self.logger.debug(str(path_obj))
+        self.log.debug(str(path_obj))
         if len(path) > 0 and path[-1] == "/":
             parent = path_obj
             name = ""
@@ -1772,8 +1790,8 @@ class SilikBaseKernel(Kernel):
             parent = path_obj.parent
             name = path_obj.name
 
-        self.logger.debug(f"last element :{name}")
-        self.logger.debug(f"parent : {parent}")
+        self.log.debug(f"last element :{name}")
+        self.log.debug(f"parent : {parent}")
 
         all_matches = []
         for each_path in parent.iterdir():
@@ -1786,11 +1804,11 @@ class SilikBaseKernel(Kernel):
                 else:
                     all_matches.append(str(each_path))
 
-        self.logger.debug(all_matches)
+        self.log.debug(all_matches)
         return all_matches
 
     def complete_cmd_name(self, cmd_name):
-        self.logger.debug(f"Completing cmd name {cmd_name}")
+        self.log.debug(f"Completing cmd name {cmd_name}")
         all_matches = []
         for each_cmd in self.all_cmds:
             if len(each_cmd) < len(cmd_name):
@@ -1812,7 +1830,7 @@ class SilikBaseKernel(Kernel):
                 directories are returned. Else, the file with matching
                 names are also returned.
         """
-        self.logger.debug(f"Completing path {path}")
+        self.log.debug(f"Completing path {path}")
         path_components = path.split("/")
         last_elem = path_components[-1]
         path_components.pop(-1)
@@ -1820,9 +1838,7 @@ class SilikBaseKernel(Kernel):
         current_node = self.active_node
         if current_node is None:
             return []
-        self.logger.debug(
-            f"Path components {path_components}, from node {current_node}"
-        )
+        self.log.debug(f"Path components {path_components}, from node {current_node}")
         parent_last_elem = self.active_node.find_node_from_path(
             "/".join(path_components)
         )
@@ -1862,7 +1878,7 @@ class SilikBaseKernel(Kernel):
 
     def complete_source_cmd(self, word: str, rank: int | None):
         matches = self.complete_filesystem_path(word)
-        self.logger.debug(f"Completing path : {word}")
+        self.log.debug(f"Completing path : {word}")
         if matches is None:
             return [word]
         else:
@@ -1883,7 +1899,7 @@ class SilikBaseKernel(Kernel):
         Complete the path to either a directory or a kernel
         """
         matches = self.complete_path(word)
-        self.logger.debug(f"Matches from local path : {matches}")
+        self.log.debug(f"Matches from local path : {matches}")
         if matches is None:
             return [word]
         else:

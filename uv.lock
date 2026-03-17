@@ -436,7 +436,7 @@ dependencies = [
 requires-dist = [
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "jupyter-client", specifier = ">=8.6.3" },
-    { name = "statikomand", specifier = ">=0.0.2" },
+    { name = "statikomand", specifier = ">=0.1.1" },
 ]
 
 [[package]]
@@ -464,9 +464,9 @@ wheels = [
 
 [[package]]
 name = "statikomand"
-version = "0.0.2"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/10/fd/35df9fca1699725e4f6df910d07bd74e415d7ec437d531eb2efb1b6da692/statikomand-0.0.2.tar.gz", hash = "sha256:34621b5b6f5ed5591b1ec2b578ba40889adc35e22fafca1035153b0399e4559a", size = 4578, upload-time = "2026-02-12T14:44:54.067Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/0c/94256e4c85966e12b18d7e8134a332ab884d23d978606ea04f44d21abf90/statikomand-0.1.1.tar.gz", hash = "sha256:224a46be7efd13a2caafabc3db841ede21927f81fa20099bd37a362a17dd3d40", size = 6835, upload-time = "2026-02-26T14:36:26.128Z" }
 
 [[package]]
 name = "tornado"
