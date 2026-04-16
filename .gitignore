@@ -5,3 +5,5 @@
 **/kernel-**.json
 
 ex_scripts/
+
+**/.ipynb_checkpoints

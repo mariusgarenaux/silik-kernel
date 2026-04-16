@@ -35,3 +35,11 @@ include = ["/silik_kernel"]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "data_kernelspec/share" = "share"
+
+[dependency-groups]
+dev = [
+    "build>=1.4.0",
+    "hatchling>=1.29.0",
+    "jupyter-console>=6.6.3",
+    "twine>=6.2.0",
+]

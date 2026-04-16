@@ -4,13 +4,23 @@ from .types import IOPubMsg, ExecutionResult
 
 # Basic python dependencies
 import os
+
 from dataclasses import dataclass, field
 import random
 from pathlib import Path
 import logging
-from typing import Literal, List, Optional, Callable, Annotated, Tuple, Self
+import inspect
+from typing import (
+    List,
+    Optional,
+    Callable,
+    Annotated,
+    Tuple,
+    Any,
+)
 from statikomand import KomandParser
 from argparse import Namespace
+from collections.abc import Coroutine
 
 ALL_KERNELS_LABELS = [
     "lama",
@@ -319,7 +329,19 @@ class SilikCommandArgs:
 @dataclass
 class SilikCommand:
     handler: Annotated[
-        Callable[[Namespace], Tuple[ExecutionResult, IOPubMsg]],
-        "Method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg)",
+        Callable[
+            [Namespace],
+            Tuple[ExecutionResult, IOPubMsg]
+            | Coroutine[Any, Any, Tuple[ExecutionResult, IOPubMsg]],
+        ],
+        "Either asynchronous or synchronous method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg) (or a coroutine in case of asynchronous method.)",
     ]
     parser: KomandParser
+
+    async def run(self, *args, **kwargs):
+        result = self.handler(*args, **kwargs)
+        if inspect.isawaitable(result):
+            out = await result
+        else:
+            out = result
+        return out

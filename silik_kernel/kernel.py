@@ -4,6 +4,7 @@ import shlex
 import textwrap
 import json
 from pathlib import Path
+import asyncio
 import traceback
 from uuid import uuid4, UUID
 from typing import Literal, Optional, Tuple
@@ -31,8 +32,13 @@ from .types import (
 
 # External dependencies
 from ipykernel.kernelbase import Kernel
-from jupyter_client.multikernelmanager import MultiKernelManager
-from jupyter_client.manager import KernelManager
+from IPython.core.error import StdinNotImplementedError
+from jupyter_client.multikernelmanager import (
+    MultiKernelManager,
+    AsyncMultiKernelManager,
+)
+from jupyter_client.asynchronous.client import AsyncKernelClient
+from jupyter_client.manager import AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
@@ -74,7 +80,7 @@ class SilikBaseKernel(Kernel):
     banner = "Silik Kernel - Multikernel Manager - Run `help` for commands"
     all_kernels_labels: list[str] = ALL_KERNELS_LABELS
     # help_links: List[dict[str, str]] = [{"text": "", "url": ""}]
-    mkm: MultiKernelManager = MultiKernelManager()
+    mkm: AsyncMultiKernelManager = AsyncMultiKernelManager()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -90,11 +96,12 @@ class SilikBaseKernel(Kernel):
 
         self.log.info(f"Started kernel {self.ident} and initalized logger")
 
-        self.ksm = KernelSpecManager()
+        self.ksm: KernelSpecManager = KernelSpecManager()
+        self.log.info(self.ksm.find_kernel_specs())
         self.mode: Literal["command", "connect"] = "command"
         self.current_dir: KernelFolder = KernelFolder(label="~", id=str(uuid4()))
         self.tree: TreeNode = TreeNode(self.current_dir)  # the tree is only the
-        # root node, but will be updated with other tree nodes :)
+        # root node, but will be updated with other tree nodes :-)
 
         self.kernel_metadata = KernelMetadata(
             id=self.ident, label="home.silik", type="silik", kernel_name="home"
@@ -121,7 +128,7 @@ class SilikBaseKernel(Kernel):
     # ------------- ipykernel wrapper methods -------------- #
     # ------------------------------------------------------ #
 
-    def do_execute(  # pyright: ignore
+    async def do_execute(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         code: str,
         silent: bool,
@@ -186,7 +193,7 @@ class SilikBaseKernel(Kernel):
             # then either run code, or give it to sub-kernels
             if self.mode == "command":
                 self.log.info("Running in command mode.")
-                execution_result, msg = self.do_execute_on_silik(
+                execution_result, msg = await self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
                 if execution_result.get("status") == "error":
@@ -197,7 +204,7 @@ class SilikBaseKernel(Kernel):
                 return execution_result
 
             elif self.mode == "connect":
-                execution_result, msg = self.do_execute_on_sub_kernel(
+                execution_result, msg = await self.do_execute_on_sub_kernel(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
 
@@ -220,7 +227,7 @@ class SilikBaseKernel(Kernel):
                     else:
                         error_content: ErrorContent = {
                             "ename": "NotIOPubMsg",
-                            "evalue": "",
+                            "evalue": msg["msg_type"],
                             "traceback": [
                                 f"The message from sub-kernel is of type {msg['msg_type']}; which is not known to be sendable through IOPubSocket."
                             ],
@@ -259,7 +266,7 @@ class SilikBaseKernel(Kernel):
                 "user_expressions": {},
             }
 
-    def do_execute_on_silik(
+    async def do_execute_on_silik(
         self,
         code: str,
         silent: bool,
@@ -269,8 +276,7 @@ class SilikBaseKernel(Kernel):
     ) -> Tuple[ExecutionResult, IOPubMsg]:
         """
         Do execute method for "command mode". Runs command on silik kernel.
-        Commands can be multiline commands. Each line itself can be splitted
-        between | for 'bash like' pipes.
+        Commands can be multiline commands.
 
         Parameters:
         ---
@@ -297,7 +303,7 @@ class SilikBaseKernel(Kernel):
             if line == "":
                 continue
             self.log.info(f"Running line : `{line}`")
-            execution_result, msg = self.do_execute_one_command_on_silik(
+            execution_result, msg = await self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
             if self.mode == "connect":
@@ -322,7 +328,7 @@ class SilikBaseKernel(Kernel):
             }
         return execution_result, msg
 
-    def do_execute_one_command_on_silik(
+    async def do_execute_one_command_on_silik(
         self,
         code: str,
         silent: bool,
@@ -357,7 +363,7 @@ class SilikBaseKernel(Kernel):
         """
         splitted = code.split(maxsplit=1)
         if len(splitted) == 0:
-            self.log.warning(f"Code {code} is empty.")
+            self.log.info(f"Code {code} is empty.")
             return (
                 {
                     "status": "error",
@@ -374,7 +380,7 @@ class SilikBaseKernel(Kernel):
         cmd_name = splitted[0]
         self.log.debug(f"Splitted command. Command name : `{cmd_name}`.")
         if cmd_name not in self.all_cmds:
-            self.log.warning(f"Command `{cmd_name}` was not found")
+            self.log.info(f"Command `{cmd_name}` was not found")
 
             return (
                 {
@@ -398,11 +404,20 @@ class SilikBaseKernel(Kernel):
         else:
             args_str = splitted[1]
             self.log.debug(f"Arguments for command `{cmd_name}` : `{args_str}`")
-
-        args = cmd_obj.parser.parse_args(shlex.split(args_str))
-        self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
+        a = shlex.split(args_str)
+        self.log.debug(f"Trying to parse arguments with parser : {a}")
         try:
-            execution_result, msg = cmd_obj.handler(args)
+            if "-h" in a or "--help" in a:
+
+                class FakeNameSpace:
+                    def __init__(self, cmd_name):
+                        self.cmd = cmd_name
+
+                return self.help_cmd_handler(FakeNameSpace(cmd_name))
+
+            args = cmd_obj.parser.parse_args(a)
+            self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
+            execution_result, msg = await cmd_obj.run(args)
         except Exception as e:
             self.log.info(f"Error when running command `{cmd_name}` : `{e}`")
             return (
@@ -422,7 +437,7 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Output of `{cmd_name}` : `{execution_result}`, `{msg}`")
         return execution_result, msg
 
-    def do_execute_on_sub_kernel(
+    async def do_execute_on_sub_kernel(
         self,
         code: str,
         silent: bool,
@@ -455,7 +470,7 @@ class SilikBaseKernel(Kernel):
         """
         self.log.info(f"Code is sent to selected kernel : {self.current_dir}")
 
-        execution_result, msg = self.send_code_to_sub_kernel(
+        execution_result, msg = await self.send_code_to_sub_kernel(
             self.active_kernel,
             code,
             silent,
@@ -481,9 +496,9 @@ class SilikBaseKernel(Kernel):
 
         return execution_result, msg
 
-    def do_is_complete(self, code: str):
+    async def do_is_complete(self, code: str):  # pyright: ignore[reportIncompatibleMethodOverride]
         if self.mode == "connect":
-            km = self.mkm.get_kernel(self.active_kernel.id)
+            km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
             self.log.debug(f"Sending is_complete to {self.active_kernel}")
             kc = km.client()
             kc.start_channels()
@@ -498,7 +513,7 @@ class SilikBaseKernel(Kernel):
             output = {}
 
             while True:
-                msg = kc.get_shell_msg()
+                msg = await kc.get_shell_msg()
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
@@ -520,7 +535,7 @@ class SilikBaseKernel(Kernel):
             return {"status": "incomplete", "indent": ""}
         return {"status": "unknown"}
 
-    def do_complete(self, code: str, cursor_pos: int):
+    async def do_complete(self, code: str, cursor_pos: int):  # pyright: ignore[reportIncompatibleMethodOverride]
         """
         Tab completion. Two modes :
             - connect : gateway towards tab completion of sub kernel
@@ -530,7 +545,7 @@ class SilikBaseKernel(Kernel):
         try:
             if self.mode == "connect":
                 # just act as a gateway towards active kernel
-                km = self.mkm.get_kernel(self.active_kernel.id)
+                km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
                 self.log.debug(f"Sending do_complete to {self.active_kernel}")
                 kc = km.client()
                 kc.start_channels()
@@ -545,7 +560,7 @@ class SilikBaseKernel(Kernel):
                 output = {}
 
                 while True:
-                    msg = kc.get_shell_msg()
+                    msg = await kc.get_shell_msg()
                     if msg["parent_header"].get("msg_id") != msg_id:
                         continue
 
@@ -629,7 +644,7 @@ class SilikBaseKernel(Kernel):
                 "metadata": {},
             }
         except Exception as e:
-            self.log.warning(traceback.format_exception(e))
+            self.log.info(traceback.format_exception(e))
             return {
                 # status should be 'ok' unless an exception was raised during the request,
                 # in which case it should be 'error', along with the usual error message content
@@ -646,22 +661,109 @@ class SilikBaseKernel(Kernel):
                 "metadata": {},
             }
 
-    def do_shutdown(self, restart: bool):
+    async def interrupt_request(self, stream, ident, parent):
         """
-        Shutdown the kernel by simply shutting down all sub kernels
-        started.
-        """
-        for each_kernel in self.all_kernels:
-            connection_file = each_kernel.connection_file
-            if connection_file is not None:
-                filename = Path(connection_file).name
-                if filename.endswith(".json") and filename.startswith("kernel"):
-                    self.log.info(
-                        f"Removing kernel connection file : {connection_file}"
-                    )
-                    os.remove(connection_file)
+        This method is called when an interrupt_request message is received.
 
-        self.mkm.shutdown_all()
+        By default, Ipykernel restart the kernel on an interrupt request.
+        We override this here, to either :
+            - forward to the active sub kernel an interrupt message (in the
+            case it accepts them)
+            - stop the current cell from running (if in command mode),
+            and make custom housekeeping
+        """
+        self.log.info("Cell interuption asked ")
+        if not self.session:
+            return
+
+        if self.mode == "command":
+            content = {"status": "ok"}
+            self.session.send(stream, "interrupt_reply", content, parent, ident=ident)
+            return
+
+        if self.mode == "connect":
+            km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
+            self.log.debug(f"Sending do_complete to {self.active_kernel}")
+            if km.kernel_spec is None:
+                self.log.warning(
+                    f"Kernelspec not known of kernel `{self.active_kernel}`. Can't send an `interrupt message`."
+                )
+                return
+            if km.kernel_spec.interrupt_mode != "message":
+                self.log.info(
+                    f"Interrupt messages are transferred only when the sub kernel has `interrupt_mode` set to `message`. See https://jupyter-client.readthedocs.io/en/stable/kernels.html. This is not the case for kernel `{self.active_kernel}`."
+                )
+                return
+
+            kc = km.client()
+            kc.start_channels()
+            msg = kc.session.msg("interrupt_request", {})
+            kc.control_channel.send(msg)
+            msg_id = msg["header"]["msg_id"]
+            output = {}
+
+            while True:
+                msg = await kc.get_control_msg()
+                if msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+
+                msg_type = msg["msg_type"]
+
+                if msg_type == "interrupt_reply":
+                    content = msg["content"]
+                    self.log.info(f"Content of interrupt reply : {content}")
+                    # /!\ for ipykernel subclasses, if the interrupt_request is not
+                    # overridden, the kernel restarts on cell interruption.
+
+                    self.session.send(
+                        stream, "interrupt_reply", content, parent, ident=ident
+                    )
+                    kc.stop_channels()
+                    return
+
+                elif msg_type == "error":
+                    output = msg["content"]
+                    break
+
+            self.log.debug(f"interrupt_reply from {self.active_kernel.label}: {output}")
+            kc.stop_channels()
+
+    # TODO: implement subshell logic to be able to run a kernel directly from subshell
+    # -> this could allow asynchronous multi code settings  (in command mode) ?
+    # -> and in connect mode, we could act as a gateway with subshells of sub-kernels ?
+    # async def list_subshell_request(self, socket, ident, parent) -> None:
+    #     """
+    #     Returns the list of all kernels managed by this instance of silik.
+
+    #     Message forward with subshell id in shell message headers is not
+    #     yet implemented, but should soon.
+    #     Useless until the jupyter frontends implements the subshell
+    #     features.
+    #     """
+    #     reply = [each_kernel.id for each_kernel in self.all_kernels]
+    #     self.session.send(socket, "list_subshell_reply", reply, parent, ident)
+
+    async def do_shutdown(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, restart: bool
+    ) -> dict:
+        """
+        Shutdown all sub kernels, and remove their connection files.
+        """
+
+        # # remove comment to force removing connection files
+        # connection file should be removed by sub kernel themselves
+        # for each_kernel in self.all_kernels:
+        #     connection_file = each_kernel.connection_file
+        #     if connection_file is not None:
+        #         filename = Path(connection_file).name
+        #         if filename.endswith(".json") and filename.startswith("kernel"):
+        #             self.log.info(
+        #                 f"Removing kernel connection file : {connection_file}"
+        #             )
+        #             if os.path.isfile(connection_file):
+        #                 os.remove(connection_file)
+
+        await self.mkm.shutdown_all()
         return super().do_shutdown(restart)
 
     # ------------------------------------------------------ #
@@ -765,7 +867,7 @@ class SilikBaseKernel(Kernel):
             if each_kernel.kernel_name == kernel_label:
                 return each_kernel
 
-    def start_kernel(
+    async def start_kernel(
         self, kernel_name: str, kernel_label: str | None = None
     ) -> KernelMetadata | None:
         """
@@ -801,13 +903,13 @@ class SilikBaseKernel(Kernel):
             self.log.debug("Existing label")
             return
 
-        self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
+        await self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.given_labels.append(kernel_label)
 
-        km = self.mkm.get_kernel(kernel_id)
+        km: AsyncKernelManager = self.mkm.get_kernel(kernel_id)  # pyright: ignore[reportAssignmentType]
         connection_file = os.path.abspath(km.connection_file)
         self.log.debug(f"Connection file for kernel : {connection_file}")
-        kernel_info = self.retrieve_kernel_information(km)
+        kernel_info = await self.retrieve_kernel_information(km)
         if kernel_info is not None:
             file_extension = kernel_info.get("language_info", {}).get(
                 "file_extension", ""
@@ -826,7 +928,7 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Successfully started kernel {new_kernel}")
         return new_kernel
 
-    def send_code_to_sub_kernel(
+    async def send_code_to_sub_kernel(
         self,
         sub_kernel: KernelMetadata,
         code: str,
@@ -858,7 +960,7 @@ class SilikBaseKernel(Kernel):
             output for do_execute method. The JupyterMessage is the message from
             the jupyter kernel protocol. Straight from sub-kernel.
         """
-        km = self.mkm.get_kernel(sub_kernel.id)
+        km: AsyncKernelManager = self.mkm.get_kernel(sub_kernel.id)  # pyright: ignore[reportAssignmentType]
         kc = km.client()
         kc.start_channels()
         content: ExecuteRequestContent = {
@@ -884,14 +986,12 @@ class SilikBaseKernel(Kernel):
 
         while True:
             try:
-                msg: JupyterMessage | None = kc.get_iopub_msg(
-                    timeout=0.1
-                )  # pyright: ignore[reportAssignmentType]
+                msg: JupyterMessage | None = await kc.get_iopub_msg(timeout=0.1)  # pyright: ignore[reportAssignmentType]
             except Exception:
                 msg = None
 
             try:
-                stdin_msg = kc.get_stdin_msg(timeout=0.1)
+                stdin_msg = await kc.get_stdin_msg(timeout=0.1)
             except Exception:
                 stdin_msg = None
 
@@ -901,6 +1001,11 @@ class SilikBaseKernel(Kernel):
                 out = self.raw_input(stdin_msg["content"]["prompt"])
                 self._allow_stdin = False
                 self.log.debug(f"out of stdin : {out}")
+                if not allow_stdin:
+                    # this should not happen, because of the 'content'
+                    # containing the allow_stdin variable. It in
+                    # case it happens
+                    continue
                 input_reply = kc.session.msg("input_reply", {"value": out})
                 kc.stdin_channel.send(input_reply)
                 continue
@@ -944,7 +1049,9 @@ class SilikBaseKernel(Kernel):
                     "user_expressions": {},
                 }, msg
 
-    def retrieve_kernel_information(self, kernel_manager: KernelManager) -> dict | None:
+    async def retrieve_kernel_information(
+        self, kernel_manager: AsyncKernelManager
+    ) -> dict | None:
         kernel_client = kernel_manager.client()
         kernel_client.start_channels()
         kernel_info = None
@@ -953,7 +1060,7 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Kernel info message id : `{msg_id}`")
         # Send kernel_info_request
         while True:
-            msg = kernel_client.get_shell_msg(timeout=5)
+            msg = await kernel_client.get_shell_msg(timeout=5)
             self.log.debug(f"Message from shell socket : `{msg}`")
 
             if msg["parent_header"].get("msg_id") != msg_id:
@@ -997,7 +1104,6 @@ class SilikBaseKernel(Kernel):
             In [3]: 1+1
             Out[1]: 2
         """
-        self.mode = "connect"
 
         node_at_path = self.active_node.find_node_value_from_path(args.path)
         if node_at_path is None:
@@ -1010,6 +1116,7 @@ class SilikBaseKernel(Kernel):
 
         self.active_kernel = node_at_path
 
+        self.mode = "connect"
         return {
             "status": "ok",
             "execution_count": self.execution_count,
@@ -1130,7 +1237,7 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
-    def start_kernel_cmd_handler(
+    async def start_kernel_cmd_handler(
         self, args
     ) -> Tuple[ExecutionResult, ExecuteResultContent]:
         """
@@ -1175,7 +1282,7 @@ class SilikBaseKernel(Kernel):
                 f"Please specify a kernel-type among {self.get_available_kernels}"
             )
 
-        new_kernel = self.start_kernel(
+        new_kernel = await self.start_kernel(
             args.kernel_type, None if not args.label else args.label
         )
         if new_kernel is None:
@@ -1360,7 +1467,6 @@ class SilikBaseKernel(Kernel):
         for session, line, code in content:
             indent = 3
             if PRETTY_DISPLAY:
-
                 prefix_in = " " * indent + f"\033[0;32mIn [{line}]:\033[0m"
                 prefix_out = " " * indent + f"\033[0;31mOut[{line}]:\033[0m"
             else:
@@ -1438,7 +1544,7 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
-    def run_cmd_handler(self, args) -> Tuple[ExecutionResult, IOPubMsg]:
+    async def run_cmd_handler(self, args) -> Tuple[ExecutionResult, IOPubMsg]:
         """
         Send a message to the active sub kernel. Returns the result through
         IOPub channel.
@@ -1467,7 +1573,7 @@ class SilikBaseKernel(Kernel):
         if not isinstance(target_kernel, KernelMetadata):
             raise ValueError(f"Could not find any kernel located at {args.path}")
 
-        execution_result, jupyter_msg = self.send_code_to_sub_kernel(
+        execution_result, jupyter_msg = await self.send_code_to_sub_kernel(
             sub_kernel=target_kernel, code=args.cmd, silent=False
         )
 
@@ -1504,7 +1610,7 @@ class SilikBaseKernel(Kernel):
     def exit_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         raise NotImplementedError("Exit command is not yet implemented.")
 
-    def source_cmd_handler(self, args):
+    async def source_cmd_handler(self, args):
         """
         Execute the content of a text file on the silik kernel.
         The text file is located on the filesystem where the kernel runs.
@@ -1537,7 +1643,8 @@ class SilikBaseKernel(Kernel):
         with open(path, "rt", encoding="utf-8") as f:
             code = f.read()
 
-        return self.do_execute_on_silik(code, False)
+        out = await self.do_execute_on_silik(code, False)
+        return out
 
     def cat_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
         """
