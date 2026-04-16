@@ -4,7 +4,6 @@ import shlex
 import textwrap
 import json
 from pathlib import Path
-import asyncio
 import traceback
 from uuid import uuid4, UUID
 from typing import Literal, Optional, Tuple
@@ -32,17 +31,14 @@ from .types import (
 
 # External dependencies
 from ipykernel.kernelbase import Kernel
-from IPython.core.error import StdinNotImplementedError
 from jupyter_client.multikernelmanager import (
-    MultiKernelManager,
     AsyncMultiKernelManager,
 )
-from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.manager import AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.4"
+SILIK_VERSION = "1.6.5"
 
 
 class SilikBaseKernel(Kernel):
