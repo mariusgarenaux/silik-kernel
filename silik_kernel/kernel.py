@@ -445,7 +445,11 @@ class SilikBaseKernel(Kernel):
             output = {}
 
             while True:
-                msg = await kc.get_shell_msg()
+                try:
+                    msg = await kc.get_shell_msg()
+                except Exception as e:
+                    self.log.warning(f"Error while listening to shell channel : {e}")
+                    continue
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
@@ -490,7 +494,13 @@ class SilikBaseKernel(Kernel):
                 output = {}
 
                 while True:
-                    msg = await kc.get_shell_msg()
+                    try:
+                        msg = await kc.get_shell_msg()
+                    except Exception as e:
+                        self.log.warning(
+                            f"Error while trying to access shell channel {e}"
+                        )
+                        continue
                     if msg["parent_header"].get("msg_id") != msg_id:
                         continue
 
@@ -634,7 +644,13 @@ class SilikBaseKernel(Kernel):
             output = {}
 
             while True:
-                msg = await kc.get_control_msg()
+                try:
+                    msg = await kc.get_control_msg()
+                except Exception as e:
+                    self.log.warning(
+                        f"Error while trying to access control channel {e}"
+                    )
+                    continue
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
@@ -785,7 +801,13 @@ class SilikBaseKernel(Kernel):
 
             # Wait for reply
             while True:
-                msg = await kc.get_shell_msg()
+                try:
+                    msg = await kc.get_shell_msg()
+                except Exception as e:
+                    self.log.warning(
+                        f"Error while trying to connect shell channel : {e}"
+                    )
+                    continue
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
@@ -922,7 +944,13 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Kernel info message id : `{msg_id}`")
         # Send kernel_info_request
         while True:
-            msg = await kernel_client.get_shell_msg(timeout=5)
+            try:
+                msg = await kernel_client.get_shell_msg(timeout=5)
+            except Exception as e:
+                self.log.error(
+                    f"Error while connection to sub kernel shell socket : {e}"
+                )
+                continue
             self.log.debug(f"Message from shell socket : `{msg}`")
 
             if msg["parent_header"].get("msg_id") != msg_id:
@@ -1961,6 +1989,7 @@ class SilikBaseKernel(Kernel):
         """
         Sends an execute_result message, with text/plain mime type.
         """
+
         self.send_response(
             self.iopub_socket,
             "execute_result",

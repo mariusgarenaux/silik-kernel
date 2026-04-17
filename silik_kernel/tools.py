@@ -1,10 +1,5 @@
-# Internal dependencies
-
-from .types import IOPubMsg, ExecutionResult
-
 # Basic python dependencies
 import os
-
 from dataclasses import dataclass, field
 import random
 from datetime import datetime
@@ -16,9 +11,10 @@ from typing import (
     Optional,
     Callable,
     Annotated,
-    Tuple,
     Any,
 )
+
+# External dependencies
 from statikomand import KomandParser
 from argparse import Namespace
 from collections.abc import Coroutine
