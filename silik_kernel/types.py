@@ -434,6 +434,7 @@ MsgType = Literal[
     "input_request",
     "input_reply",
     "execute_request",
+    "execute_reply",
     "history_request",
     "history_reply",
     "is_complete_request",

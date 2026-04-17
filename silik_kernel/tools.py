@@ -331,8 +331,7 @@ class SilikCommand:
     handler: Annotated[
         Callable[
             [Namespace],
-            Tuple[ExecutionResult, IOPubMsg]
-            | Coroutine[Any, Any, Tuple[ExecutionResult, IOPubMsg]],
+            IOPubMsg | Coroutine[Any, Any, Optional[IOPubMsg]],
         ],
         "Either asynchronous or synchronous method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg) (or a coroutine in case of asynchronous method.)",
     ]

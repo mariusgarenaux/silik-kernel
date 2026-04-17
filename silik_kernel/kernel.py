@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import traceback
 from uuid import uuid4, UUID
-from typing import Literal, Optional, Tuple
+import asyncio
+from typing import Literal, Optional
 
 # Internal dependencies
 from .tools import (
@@ -25,7 +26,6 @@ from .types import (
     IOPubMsg,
     JupyterMessage,
     ExecuteRequestContent,
-    ErrorContent,
     ExecuteResultContent,
 )
 
@@ -36,6 +36,7 @@ from jupyter_client.multikernelmanager import (
 )
 from jupyter_client.manager import AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
+from jupyter_client.asynchronous.client import AsyncKernelClient
 from statikomand import KomandParser
 
 SILIK_VERSION = "1.6.5"
@@ -157,15 +158,18 @@ class SilikBaseKernel(Kernel):
             ExecutionResult, according to Jupyter documentation.
         """
         try:
+            self.payload = []
+            self.kernel_resp: ExecutionResult = {
+                "status": "ok",
+                "execution_count": self.execution_count,
+                "payload": [],
+                "user_expressions": {},
+            }
             if code in ["exit", "exit()", "quit", "quit()"]:
                 # return self.do_shutdown(False)
-                return {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [{"source": "ask_exit", "keepkernel": False}],
-                    # "payload": [],
-                    "user_expressions": {},
-                }
+                self.payload = [{"source": "ask_exit", "keepkernel": False}]
+                self.kernel_resp["payload"] = self.payload
+                return self.kernel_resp
             if code in ["/cmd", "<"]:
                 self.mode = "command"
                 self.send_response(
@@ -179,72 +183,40 @@ class SilikBaseKernel(Kernel):
                         "metadata": {},
                     },
                 )
-                return {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }
+                return self.kernel_resp
 
             # then either run code, or give it to sub-kernels
             if self.mode == "command":
                 self.log.info("Running in command mode.")
-                execution_result, msg = await self.do_execute_on_silik(
+                msg = await self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
-                if execution_result.get("status") == "error":
+                if self.kernel_resp["status"] == "error":
                     self.send_response(self.iopub_socket, "error", msg)
-                else:
+                elif msg is not None:
                     self.send_response(self.iopub_socket, "execute_result", msg)
                 self.log.info(f"Output of command : {msg}")
-                return execution_result
+                self.kernel_resp["payload"] = self.payload
+                return self.kernel_resp
 
             elif self.mode == "connect":
-                execution_result, msg = await self.do_execute_on_sub_kernel(
-                    code, silent, store_history, user_expressions, allow_stdin
+                await self.do_execute_on_sub_kernel(
+                    self.active_kernel,
+                    code,
+                    silent,
+                    store_history,
+                    user_expressions,
+                    allow_stdin,
                 )
+                if "payload" in self.kernel_resp:
+                    self.kernel_resp["payload"] = self.payload
 
-                if execution_result["status"] == "error":
-                    self.send_response(self.iopub_socket, "error", msg["content"])
-                elif execution_result["status"] == "ok":
-                    if msg["msg_type"] in [
-                        "stream",
-                        "display_data",
-                        "update_display_data",
-                        "execute_input",
-                        "execute_result",
-                        "error",
-                        "clear_output",
-                        "status",
-                    ]:
-                        self.send_response(
-                            self.iopub_socket, msg["msg_type"], msg["content"]
-                        )
-                    else:
-                        error_content: ErrorContent = {
-                            "ename": "NotIOPubMsg",
-                            "evalue": msg["msg_type"],
-                            "traceback": [
-                                f"The message from sub-kernel is of type {msg['msg_type']}; which is not known to be sendable through IOPubSocket."
-                            ],
-                        }
-                        self.send_response(self.iopub_socket, "error", error_content)
-                        return {
-                            "execution_count": self.execution_count,
-                            "payload": [],
-                            "status": "error",
-                            "user_expressions": {},
-                        }
-
-                return execution_result
+                return self.kernel_resp
             else:
                 self.mode = "command"
-                return {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }
+                self.kernel_resp["payload"] = self.payload
+                self.kernel_resp["status"] = "error"
+                return self.kernel_resp
         except Exception as e:
             self.send_response(
                 self.iopub_socket,
@@ -255,12 +227,9 @@ class SilikBaseKernel(Kernel):
                     "traceback": traceback.format_exception(e),
                 },
             )
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }
+            self.kernel_resp["payload"] = self.payload
+            self.kernel_resp["status"] = "error"
+            return self.kernel_resp
 
     async def do_execute_on_silik(
         self,
@@ -269,7 +238,7 @@ class SilikBaseKernel(Kernel):
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> Tuple[ExecutionResult, IOPubMsg]:
+    ) -> Optional[IOPubMsg]:
         """
         Do execute method for "command mode". Runs command on silik kernel.
         Commands can be multiline commands.
@@ -294,35 +263,20 @@ class SilikBaseKernel(Kernel):
         splitted_code = code.split("\n")
         self.log.debug(f"Splitted Multiline Code {splitted_code}")
 
-        execution_result, msg = None, None
+        msg = None
         for line in splitted_code:
             if line == "":
                 continue
             self.log.info(f"Running line : `{line}`")
-            execution_result, msg = await self.do_execute_one_command_on_silik(
+            msg = await self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
             if self.mode == "connect":
                 # if mode has switched during execution
                 # we stop the cell execution, since the
                 # language has changed !
-                return execution_result, msg
-
-            if execution_result.get("status") == "error":
-                return execution_result, msg
-
-        if execution_result is None or msg is None:
-            return {
-                "status": "error",
-                "execution_count": self.execution_count,
-                "payload": [],
-                "user_expressions": {},
-            }, {
-                "ename": "UnknownCommand",
-                "evalue": "Unknown command",
-                "traceback": ["Internal Error"],
-            }
-        return execution_result, msg
+                return msg
+        return msg
 
     async def do_execute_one_command_on_silik(
         self,
@@ -332,7 +286,7 @@ class SilikBaseKernel(Kernel):
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
         cmd_stdin: str | None = None,
-    ) -> Tuple[ExecutionResult, IOPubMsg]:
+    ) -> Optional[IOPubMsg]:
         """
         Execute one of command in silik. Do not send result to iopub socket;
         but returns the message that is meant to be send to iopub socket,
@@ -360,39 +314,25 @@ class SilikBaseKernel(Kernel):
         splitted = code.split(maxsplit=1)
         if len(splitted) == 0:
             self.log.info(f"Code {code} is empty.")
-            return (
-                {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                },
-                {
-                    "ename": "UnknownCommand",
-                    "evalue": "Unknown command",
-                    "traceback": ["Could not parse command"],
-                },
-            )
+            self.kernel_resp["status"] = "error"
+
+            return {
+                "ename": "UnknownCommand",
+                "evalue": "Unknown command",
+                "traceback": ["Could not parse command"],
+            }
         cmd_name = splitted[0]
         self.log.debug(f"Splitted command. Command name : `{cmd_name}`.")
         if cmd_name not in self.all_cmds:
             self.log.info(f"Command `{cmd_name}` was not found")
-
-            return (
-                {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                },
-                {
-                    "ename": "UnknownCommand",
-                    "evalue": cmd_name,
-                    "traceback": [
-                        f"Command `{cmd_name}` not found. Available commands : {list(self.all_cmds.keys())}"
-                    ],
-                },
-            )
+            self.kernel_resp["status"] = "error"
+            return {
+                "ename": "UnknownCommand",
+                "evalue": cmd_name,
+                "traceback": [
+                    f"Command `{cmd_name}` not found. Available commands : {list(self.all_cmds.keys())}"
+                ],
+            }
         cmd_obj = self.all_cmds[cmd_name]
         if len(splitted) <= 1:
             self.log.debug(f"No arguments were found for command {cmd_name}")
@@ -413,84 +353,86 @@ class SilikBaseKernel(Kernel):
 
             args = cmd_obj.parser.parse_args(a)
             self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
-            execution_result, msg = await cmd_obj.run(args)
+            msg = await cmd_obj.run(args)
         except Exception as e:
             self.log.info(f"Error when running command `{cmd_name}` : `{e}`")
-            return (
-                {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                },
-                {
-                    "ename": "CommandError",
-                    "evalue": str(e),
-                    "traceback": traceback.format_exception(e),
-                },
-            )
-
-        self.log.debug(f"Output of `{cmd_name}` : `{execution_result}`, `{msg}`")
-        return execution_result, msg
+            self.kernel_resp["status"] = "error"
+            return {
+                "ename": "CommandError",
+                "evalue": str(e),
+                "traceback": traceback.format_exception(e),
+            }
+        self.log.debug(f"Output of `{cmd_name}` :  `{msg}`")
+        return msg
 
     async def do_execute_on_sub_kernel(
         self,
+        sub_kernel: KernelMetadata,
         code: str,
         silent: bool,
         store_history: bool = True,
         user_expressions: Optional[dict] = None,
         allow_stdin: bool = False,
-    ) -> Tuple[ExecutionResult, JupyterMessage]:
+    ):
         """
-        Transfer code to the selected sub-kernel. And sends the content of
-        sub-kernel ouput through IOPub channel.
+        Send code to sub kernel for execution through shell channel. Opens a client with
+        the kernel, by using MultiKernelManager from JupyterClient.
+        We then we listen on:
+            - IOPub Channel for execution result
+            - Shell Channel for optional payloads that could be forwarded to frontend
+            - Stdin Channel for kernel asking input_request to frontend
 
-        The parameters are those asked by the IPykernel wrapper method
-        do_execute :
-        https://jupyter-client.readthedocs.io/en/stable/wrapperkernels.html#MyKernel.do_execute
+        The kernel response (for silik kernel) is filled with appropriate informations,
+        and messages from each of the above sockets are forwarded to silik kernel frontend.
 
         Parameters
         ---
 
+            - sub_kernel : A KernelMetadata object describing the sub kernel
             - code (str) : The code to be executed.
             - silent (bool) : Whether to display output.
-            - store_history (bool) : Whether to record this code in history and increase the execution count. If silent is True, this is implicitly False.
-            - user_expressions (dict) : Mapping of names to expressions to evaluate after the code has run. You can ignore this if you need to.
-            - allow_stdin (bool) : Whether the frontend can provide input on request (e.g. for Python’s raw_input()).
+            - store_history (bool) : Whether to record this code in history and increase the
+                execution count. If silent is True, this is implicitly False.
+            - user_expressions (dict) : Mapping of names to expressions to evaluate
+                 after the code has run. You can ignore this if you need to.
+            - allow_stdin (bool) : Whether the frontend can provide input on request
+                 (e.g. for Python’s raw_input()).
 
         Returns :
         ---
-            A tuple (ExecutionResult, JupyterMessage). The execution result is the expected output
-            of do_execute method of IPykernel wrapper. The JupyterMessage is the message from
-            the jupyter kernel protocol. Straight from sub-kernel.
+            The JupyterMessage from sub-kernel.
         """
-        self.log.info(f"Code is sent to selected kernel : {self.current_dir}")
-
-        execution_result, msg = await self.send_code_to_sub_kernel(
-            self.active_kernel,
-            code,
-            silent,
-            store_history,
-            user_expressions,
-            allow_stdin,
+        km: AsyncKernelManager = self.mkm.get_kernel(sub_kernel.id)  # pyright: ignore[reportAssignmentType]
+        kc = km.client()
+        kc.start_channels()
+        content: ExecuteRequestContent = {
+            "code": code,
+            "silent": silent,
+            "store_history": store_history,
+            "user_expressions": user_expressions,
+            "allow_stdin": allow_stdin,
+            "stop_on_error": True,
+        }
+        self.log.debug(
+            f"Created channel with sub-kernel. Sending execute request: {content}."
         )
-        self.log.debug(f"Output of cell : {execution_result, msg}")
 
-        # custom for silent execution : TODO clean display :-)
-        # if silent:
-        #     return execution_result, msg
-        # all_out = []
-        # for each_output_type in msg:
-        #     # sends content to each channel (error, execution result, ...)
-        #     self.log.debug(f"Output type {msg[each_output_type]}")
-        #     if each_output_type == "execute_result":
-        #         msg[each_output_type]["data"]["text/plain"] = (
-        #             f"{self.active_kernel.label} [{self.active_kernel.type}]\n"
-        #             + msg[each_output_type]["data"]["text/plain"]
-        #         )
-        #     all_out.append(msg[each_output_type])
+        msg_sent = kc.session.msg("execute_request", content)
+        kc.shell_channel.send(msg_sent)
+        msg_id = msg_sent["header"]["msg_id"]
 
-        return execution_result, msg
+        self.log.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
+        self.forward_sub_kernel_channels = True
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self.forward_sub_kernel_iopub_channel(kc, msg_id))
+                tg.create_task(
+                    self.forward_sub_kernel_stdin_channel(kc, msg_id, allow_stdin)
+                )
+                tg.create_task(self.forward_sub_kernel_shell_channel(kc, msg_id))
+        except* SubKernelExecutionDone:
+            self.log.info("Execution on sub kernel ended")
+        kc.stop_channels()
 
     async def do_is_complete(self, code: str):  # pyright: ignore[reportIncompatibleMethodOverride]
         if self.mode == "connect":
@@ -924,127 +866,6 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Successfully started kernel {new_kernel}")
         return new_kernel
 
-    async def send_code_to_sub_kernel(
-        self,
-        sub_kernel: KernelMetadata,
-        code: str,
-        silent: bool,
-        store_history: bool = True,
-        user_expressions: Optional[dict] = None,
-        allow_stdin: bool = False,
-    ) -> Tuple[ExecutionResult, JupyterMessage]:
-        """
-        Send code to sub kernel for execution through shell channel. Opens a client with
-        the kernel, by using MultiKernelManager from JupyterClient.
-
-        Parameters
-        ---
-
-            - sub_kernel : A KernelMetadata object describing the sub kernel
-            - code (str) : The code to be executed.
-            - silent (bool) : Whether to display output.
-            - store_history (bool) : Whether to record this code in history and increase the
-                execution count. If silent is True, this is implicitly False.
-            - user_expressions (dict) : Mapping of names to expressions to evaluate
-                 after the code has run. You can ignore this if you need to.
-            - allow_stdin (bool) : Whether the frontend can provide input on request
-                 (e.g. for Python’s raw_input()).
-
-        Returns :
-        ---
-            A tuple (ExecutionResult, JupyterMessage). First element is the expected
-            output for do_execute method. The JupyterMessage is the message from
-            the jupyter kernel protocol. Straight from sub-kernel.
-        """
-        km: AsyncKernelManager = self.mkm.get_kernel(sub_kernel.id)  # pyright: ignore[reportAssignmentType]
-        kc = km.client()
-        kc.start_channels()
-        content: ExecuteRequestContent = {
-            "code": code,
-            "silent": silent,
-            "store_history": store_history,
-            "user_expressions": user_expressions,
-            "allow_stdin": allow_stdin,
-            "stop_on_error": True,
-        }
-        self.log.debug(
-            f"Created channel with sub-kernel. Sending execute request: {content}."
-        )
-
-        msg_sent = kc.session.msg(
-            "execute_request",
-            content,
-        )
-        kc.shell_channel.send(msg_sent)
-        msg_id = msg_sent["header"]["msg_id"]
-
-        self.log.debug(f"Sent execute request to kernel. Message id : {msg_id}.")
-
-        while True:
-            try:
-                msg: JupyterMessage | None = await kc.get_iopub_msg(timeout=0.1)  # pyright: ignore[reportAssignmentType]
-            except Exception:
-                msg = None
-
-            try:
-                stdin_msg = await kc.get_stdin_msg(timeout=0.1)
-            except Exception:
-                stdin_msg = None
-
-            if stdin_msg is not None:
-                self.log.debug(f"Message from stdin : {stdin_msg}.")
-                self._allow_stdin = True
-                out = self.raw_input(stdin_msg["content"]["prompt"])
-                self._allow_stdin = False
-                self.log.debug(f"out of stdin : {out}")
-                if not allow_stdin:
-                    # this should not happen, because of the 'content'
-                    # containing the allow_stdin variable. It in
-                    # case it happens
-                    continue
-                input_reply = kc.session.msg("input_reply", {"value": out})
-                kc.stdin_channel.send(input_reply)
-                continue
-
-            if msg is None:
-                continue
-
-            self.log.debug(f"Received msg : {msg}")
-            if msg["parent_header"].get("msg_id") != msg_id:
-                continue
-
-            msg_type = msg["msg_type"]
-            self.log.info(f"Message from sub-kernel : `{msg}`")
-
-            if msg_type in ["execute_result", "display_data"]:
-                kc.stop_channels()
-                return {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }, msg
-            if msg_type == "stream":
-                self.send_response(self.iopub_socket, "stream", msg["content"])
-
-            if msg_type == "error":
-                kc.stop_channels()
-                return {
-                    "status": "error",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }, msg
-
-            if msg_type == "status" and msg["content"]["execution_state"] == "idle":
-                kc.stop_channels()
-                return {
-                    "status": "ok",
-                    "execution_count": self.execution_count,
-                    "payload": [],
-                    "user_expressions": {},
-                }, msg
-
     async def retrieve_kernel_information(
         self, kernel_manager: AsyncKernelManager
     ) -> dict | None:
@@ -1075,11 +896,121 @@ class SilikBaseKernel(Kernel):
         self.log.debug(f"Retrieved kernel informations : `{kernel_info}`")
         return kernel_info
 
+    async def forward_sub_kernel_stdin_channel(
+        self, kc: AsyncKernelClient, msg_id: str, allow_stdin: bool
+    ):
+        """
+        Listen on sub kernel stdin channel, in case an input_request
+        message is sent by sub kernel.
+        In this case, the silik kernel sends the very same input_request
+        message to the frontend.
+        """
+        while self.forward_sub_kernel_channels:
+            if not allow_stdin:
+                # no need to listen on stdin
+                break
+            try:
+                stdin_msg = await kc.get_stdin_msg(timeout=5)
+            except Exception as e:
+                self.log.info(
+                    f"Error while listening on sub kernel stdin channel : {e}"
+                )
+                continue
+
+            else:
+                if stdin_msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+                self.log.debug(f"Message from stdin : {stdin_msg}.")
+                self._allow_stdin = True
+                out = self.raw_input(stdin_msg["content"]["prompt"])
+                self._allow_stdin = False
+                self.log.debug(f"out of stdin : {out}")
+                input_reply = kc.session.msg("input_reply", {"value": out})
+                kc.stdin_channel.send(input_reply)
+
+    async def forward_sub_kernel_shell_channel(
+        self, kc: AsyncKernelClient, msg_id: str
+    ):
+        """
+        Listen on shell channel, until a message with the matching id
+        is found.
+        Then, fills self.payload with the payload from the shell message,
+        and breaks the loop.
+        """
+        while self.forward_sub_kernel_channels:
+            try:
+                shell_msg: JupyterMessage = await kc.get_shell_msg(timeout=5)  # pyright: ignore[reportAssignmentType]
+            except Exception as e:
+                self.log.info(
+                    f"Error while listening on sub kernel shell channel : {e}"
+                )
+                continue
+            else:
+                if shell_msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+
+                if shell_msg["msg_type"] == "execute_reply":
+                    new_payload = shell_msg["content"]["payload"]
+                    if len(new_payload) > 0:
+                        self.payload += shell_msg["content"]["payload"]
+
+    async def forward_sub_kernel_iopub_channel(
+        self, kc: AsyncKernelClient, msg_id: str
+    ):
+        """
+        Listen on IOPub channel of subkernel, and forwards message to silik kernel frontend.
+        Change the self.kernel_resp on the fly.
+        """
+        while True:
+            try:
+                jupyter_msg: JupyterMessage = await kc.get_iopub_msg(timeout=5)  # pyright: ignore[reportAssignmentType]
+            except Exception as e:
+                self.log.info(f"Error when getting iopub message : {e}")
+                continue
+            else:
+                self.log.debug(f"Received msg : {jupyter_msg}")
+                if jupyter_msg["parent_header"].get("msg_id") != msg_id:
+                    continue
+
+                iopub_msg_type = jupyter_msg["msg_type"]
+                self.log.info(f"Message from sub-kernel : `{jupyter_msg}`")
+
+                if iopub_msg_type in ["execute_result", "display_data"]:
+                    self.send_response(
+                        self.iopub_socket, iopub_msg_type, jupyter_msg["content"]
+                    )
+                    break
+
+                if iopub_msg_type == "stream":
+                    self.send_response(
+                        self.iopub_socket, "stream", jupyter_msg["content"]
+                    )
+
+                if iopub_msg_type == "error":
+                    self.kernel_resp["status"] = "error"
+                    self.send_response(
+                        self.iopub_socket, "error", jupyter_msg["content"]
+                    )
+                    break
+
+                if (
+                    iopub_msg_type == "status"
+                    and jupyter_msg["content"]["execution_state"] == "idle"
+                ):
+                    self.send_response(
+                        self.iopub_socket, "status", jupyter_msg["content"]
+                    )
+                    break
+        self.forward_sub_kernel_channels = False
+        raise SubKernelExecutionDone
+        # stop listening on sub kernel channels
+        # when the code was executed
+
     # ------------------------------------------------------ #
     # ----------------- COMMANDS HANDLERS ------------------ #
     # ------------------------------------------------------ #
 
-    def gateway_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def gateway_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Changes the mode of silik-kernel to 'command'. All future
         code cells will be run on a sub-kernel.
@@ -1114,11 +1045,6 @@ class SilikBaseKernel(Kernel):
 
         self.mode = "connect"
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {
                 "text/plain": f"All cells are executed on kernel {self.active_kernel}. Run /cmd to exit this mode and select a new kernel."
@@ -1126,7 +1052,7 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
-    def help_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def help_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Display the help message.
 
@@ -1163,17 +1089,12 @@ class SilikBaseKernel(Kernel):
             content = f"• {cmd_name} : {self.all_cmds[cmd_name].handler.__doc__}"
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def cd_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def cd_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Allows to move between the folders (in silik only). Directories can
         be created in silik, but have no link with your real filesystem.
@@ -1223,19 +1144,12 @@ class SilikBaseKernel(Kernel):
             )
         self.current_dir = found_value
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": self.active_node.path},
             "metadata": {},
         }
 
-    async def start_kernel_cmd_handler(
-        self, args
-    ) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    async def start_kernel_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Starts a new kernel, from the root of the selected dir.
         Use tab completion or send 'kernels' command to see the
@@ -1291,17 +1205,12 @@ class SilikBaseKernel(Kernel):
         content = self.active_node.path
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def tree_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def tree_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Display the whole tree (directories and kernels) from the current node.
 
@@ -1318,17 +1227,12 @@ class SilikBaseKernel(Kernel):
         """
         content = self.active_node.tree_to_str()
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def restart_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def restart_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Restart a kernel.
 
@@ -1367,17 +1271,12 @@ class SilikBaseKernel(Kernel):
         self.mkm.restart_kernel(kernel_to_restart.id)
         content = f"Restarted kernel {kernel_to_restart}"
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def kernels_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def kernels_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Returns the list of available kernel that can be started from silik.
 
@@ -1389,17 +1288,12 @@ class SilikBaseKernel(Kernel):
         content = self.get_available_kernels
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def history_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def history_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Display the history of the selected kernel. Sends an 'history_request' to
         the kernel (see https://jupyter-client.readthedocs.io/en/stable/messaging.html#history).
@@ -1485,17 +1379,12 @@ class SilikBaseKernel(Kernel):
             out += "\n\n"
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": out},
             "metadata": {},
         }
 
-    def mkdir_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def mkdir_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Creates a directory inside the current directory. A directory can be
         used to store kernels. They are not persistent through sessions,
@@ -1530,20 +1419,15 @@ class SilikBaseKernel(Kernel):
         node_value = KernelFolder(label=args.label, id=str(uuid4()))
         self.active_node.add_children(node_value)
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": ""},
             "metadata": {},
         }
 
-    async def run_cmd_handler(self, args) -> Tuple[ExecutionResult, IOPubMsg]:
+    async def run_cmd_handler(self, args) -> None:
         """
-        Send a message to the active sub kernel. Returns the result through
-        IOPub channel.
+        Send a message to the active sub kernel. Returns the result in an
+        IOPubMsg.
 
         Positional arguments :
         ---
@@ -1569,41 +1453,11 @@ class SilikBaseKernel(Kernel):
         if not isinstance(target_kernel, KernelMetadata):
             raise ValueError(f"Could not find any kernel located at {args.path}")
 
-        execution_result, jupyter_msg = await self.send_code_to_sub_kernel(
+        await self.do_execute_on_sub_kernel(
             sub_kernel=target_kernel, code=args.cmd, silent=False
         )
 
-        msg_type = jupyter_msg["msg_type"]
-
-        match msg_type:
-            case "stream":
-                content = jupyter_msg["content"]["text"]
-                return execution_result, {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": content},
-                    "metadata": {},
-                }
-            case "display_data" | "update_display_data":
-                content = jupyter_msg["content"]["data"]["text/plain"]
-                return execution_result, {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": content},
-                    "metadata": {},
-                }
-            case "execute_result" | "error":
-                return execution_result, jupyter_msg["content"]
-            case "execute_input" | "clear_output" | "status":
-                return execution_result, {
-                    "execution_count": self.execution_count,
-                    "data": {"text/plain": ""},
-                    "metadata": {},
-                }
-            case _:
-                raise Exception(
-                    f"Message of run command is of type {msg_type}; which is not sendable through IOPubSocket"
-                )
-
-    def exit_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def exit_cmd_handler(self, args) -> ExecuteResultContent:
         raise NotImplementedError("Exit command is not yet implemented.")
 
     async def source_cmd_handler(self, args):
@@ -1642,7 +1496,7 @@ class SilikBaseKernel(Kernel):
         out = await self.do_execute_on_silik(code, False)
         return out
 
-    def cat_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def cat_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Display the content of a text file. The text file is located on the
         filesystem where the kernel runs. Relative paths are from where you started
@@ -1666,17 +1520,12 @@ class SilikBaseKernel(Kernel):
             content = f.read()
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": content},
             "metadata": {},
         }
 
-    def info_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def info_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Returns informations about a kernel. Returns the result of a kernel_info_reply,
         see :
@@ -1721,19 +1570,12 @@ class SilikBaseKernel(Kernel):
         if not isinstance(kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": json.dumps(kernel.kernel_info, indent=4)},
             "metadata": {},
         }
 
-    def connection_file_cmd_handler(
-        self, args
-    ) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def connection_file_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Returns the path to the connection file kernel.
 
@@ -1757,17 +1599,12 @@ class SilikBaseKernel(Kernel):
             raise ValueError(f"Could not find kernel located at {args.path}")
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": kernel.connection_file},
             "metadata": {},
         }
 
-    def ls_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def ls_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Displays the content of a folder (in silik kernel).
 
@@ -1815,17 +1652,12 @@ class SilikBaseKernel(Kernel):
             )
 
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": target_node.childrens_to_str()},
             "metadata": {},
         }
 
-    def pwd_cmd_handler(self, args) -> Tuple[ExecutionResult, ExecuteResultContent]:
+    def pwd_cmd_handler(self, args) -> ExecuteResultContent:
         """
         Prints the current working directory (path from ~).
 
@@ -1842,11 +1674,6 @@ class SilikBaseKernel(Kernel):
             Out[9]: ~/chatbots/
         """
         return {
-            "status": "ok",
-            "execution_count": self.execution_count,
-            "payload": [],
-            "user_expressions": {},
-        }, {
             "execution_count": self.execution_count,
             "data": {"text/plain": self.active_node.path},
             "metadata": {},
@@ -2114,3 +1941,7 @@ class SilikBaseKernel(Kernel):
             "pwd": pwd_cmd,
             "help": help_cmd,
         }
+
+
+class SubKernelExecutionDone(Exception):
+    pass
