@@ -5,8 +5,9 @@ import textwrap
 import json
 from pathlib import Path
 import traceback
-from uuid import uuid4, UUID
+from uuid import uuid4
 import asyncio
+import glob
 from typing import Literal, Optional
 
 # Internal dependencies
@@ -36,6 +37,10 @@ from jupyter_client.multikernelmanager import (
 from jupyter_client.manager import AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.asynchronous.client import AsyncKernelClient
+from jupyter_core.paths import jupyter_runtime_dir
+from jupyter_client.connect import find_connection_file
+from ipykernel.connect import get_connection_file
+
 from statikomand import KomandParser
 
 SILIK_VERSION = "1.6.6"
@@ -680,6 +685,10 @@ class SilikBaseKernel(Kernel):
         # connection file should be removed by sub kernel themselves
         # in case, we double check
         for each_kernel in self.all_kernels:
+            if (
+                each_kernel.remote_connection_file
+            ):  # don't remove remote connection files
+                continue
             connection_file = each_kernel.connection_file
             if connection_file is not None:
                 filename = Path(connection_file).name
@@ -1174,16 +1183,21 @@ class SilikBaseKernel(Kernel):
         self.current_dir = found_value
         self.send_stream(self.active_node.path)
 
-    async def start_kernel_cmd_handler(self, args):
+    async def new_kernel_cmd_handler(self, args):
         """
-        Starts a new kernel, from the root of the selected dir.
+        Opens a new kernel, from the root of the selected dir.
+        If a kernel name is given (python3, ...), the kernel is
+        started as a subprocess of this one.
+        You can also give the path to a connection file, and silik
+        kernel will connect directly with this kernel through the
+        connection file.
         Use tab completion or send 'kernels' command to see the
         list of available kernels.
 
         Positional arguments :
         ---
-            • kernel_type (str) : the type of the kernel which will be started. Must
-                be one of available kernels (see `kernels` command)
+            • kernel (str) : the type of the kernel which will be started, or
+            the path towards a connection file. See `kernels` command)
 
         Flags :
         ---
@@ -1193,18 +1207,18 @@ class SilikBaseKernel(Kernel):
 
         Examples :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
 
-            In [2]: start python3 -l k2
+            In [2]: new python3 -l k2
             Out[2]:
             ├─ k1.py
             ╰─ k2.py
 
 
-            In [3]: start bash
+            In [3]: new bash
             Out[3]:
             ├─ k1.py
             ├─ k2.py
@@ -1268,7 +1282,7 @@ class SilikBaseKernel(Kernel):
 
         Example :
         ---
-            In [1]: start python3 -l k1
+            In [1]: new python3 -l k1
             Out[1]:
             ╰─ k1.py
 
@@ -1327,7 +1341,7 @@ class SilikBaseKernel(Kernel):
 
         Example :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
@@ -1414,13 +1428,13 @@ class SilikBaseKernel(Kernel):
             In [2]: cd python_kernels/
             Out[2]: ~/python_kernels/
 
-            In [3]: start python3 -l k1
+            In [3]: new python3 -l k1
             Out[3]:
             ╰─ python_kernels <<
                 ╰─ k1.py
 
 
-            In [4]: start python3 -l k2
+            In [4]: new python3 -l k2
             Out[4]:
             ╰─ python_kernels <<
                 ├─ k1.py
@@ -1443,7 +1457,7 @@ class SilikBaseKernel(Kernel):
 
         Example :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
@@ -1485,7 +1499,7 @@ class SilikBaseKernel(Kernel):
         ---
             init.silik :
                 ```silik
-                start python3 --label k1
+                new python3 --label k1
                 run "x=19" k1.py
                 run "x" k1.py
                 ```
@@ -1515,7 +1529,7 @@ class SilikBaseKernel(Kernel):
         ---
             In [3]: cat ex_scripts/ex_init.silik
             Out[3]:
-            start python3 -l k1
+            new python3 -l k1
             run "x=2" k1.py
             run "x" k1.py
 
@@ -1539,7 +1553,7 @@ class SilikBaseKernel(Kernel):
 
         Example :
         ---
-            In [1]: start python3 -l k1
+            In [1]: new python3 -l k1
             Out[1]:
             ╰─ k1.py
 
@@ -1585,7 +1599,7 @@ class SilikBaseKernel(Kernel):
 
         Example :
         ---
-            In [1]: start python3 -l k1
+            In [1]: new python3 -l k1
             Out[1]:
             ╰─ k1.py
 
@@ -1666,9 +1680,21 @@ class SilikBaseKernel(Kernel):
     def complete_help_cmd(self, word, rank):
         return self.complete_cmd_name(word)
 
-    def complete_kernels_cmd(self, word, rank):
+    def complete_kernels_cmd(self, word: str, rank):
         self.log.debug(f"Completing kernels : {word}, {rank}")
-        return self.complete_kernel_type(word)
+        runtime_dir = jupyter_runtime_dir()
+        connection_files = glob.glob(os.path.join(runtime_dir, "kernel-*.json"))
+        current_connection_file = get_connection_file()
+        if current_connection_file in connection_files:
+            connection_files.remove(current_connection_file)
+
+        if word == "":
+            return connection_files + self.get_available_kernels
+
+        if word.startswith("/"):
+            return self.complete_filesystem_path(word)
+        else:
+            return self.complete_kernel_type(word)
 
     def complete_kernel_type(self, word: str):
         """
@@ -1868,12 +1894,10 @@ class SilikBaseKernel(Kernel):
         help_parser.add_argument("--cmd", completer=self.complete_help_cmd)
         help_cmd = SilikCommand(self.help_cmd_handler, help_parser)
 
-        start_kernel_parser = KomandParser("start")
-        start_kernel_parser.add_argument("kernel", completer=self.complete_kernels_cmd)
-        start_kernel_parser.add_argument("--label", "-l")
-        start_kernel_cmd = SilikCommand(
-            self.start_kernel_cmd_handler, start_kernel_parser
-        )
+        new_kernel_parser = KomandParser("new")
+        new_kernel_parser.add_argument("kernel", completer=self.complete_kernels_cmd)
+        new_kernel_parser.add_argument("--label", "-l")
+        new_kernel_cmd = SilikCommand(self.new_kernel_cmd_handler, new_kernel_parser)
 
         ls_parser = KomandParser("ls")
         ls_parser.add_argument(
@@ -1906,7 +1930,7 @@ class SilikBaseKernel(Kernel):
 
         self.all_cmds: dict[str, SilikCommand] = {
             "kernels": kernels_cmd,
-            "start": start_kernel_cmd,
+            "new": new_kernel_cmd,
             "restart": restart_cmd,
             "info": info_cmd,
             "connect_info": connection_file_cmd,

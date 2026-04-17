@@ -68,7 +68,7 @@ jupyter console --kernel silik
 Within a cell :
 
 ```bash
-start python3 --label k1
+new python3 --label k1
 run "x = 19" k1.py
 run "print(x)" k1.py
 ```
@@ -85,6 +85,8 @@ Now, all cells of silik kernel are directly transmitted to kernel k1.py. Try:
 print(x)
 ```
 
+> Note : you can connect to an existing kernel (p.e. a kernel started from a jupyter notebook, ...). Use TAB completion from `new` command to see examples of availables kernel connection files.
+
 ### Usage Guide
 
 To go from `command` mode to `connect` mode, you have to use the command :
@@ -100,7 +102,7 @@ To run code on sub-kernel in a silik cell, you can use `run "code" path_to_kerne
 The following code :
 
 ```bash
-start python3 --label k1
+new python3 --label k1
 > k1.py
 1+1
 ```
@@ -122,12 +124,6 @@ In connect mode, silik kernel acts as a gateway to the kernel selected on `comma
 **Code completion** : TAB completion of the selected kernel is also connected to the silik frontend;
 
 > The only code which is not sent to sub kernel is `/cmd`. This is the exit of connect mode.
-
-## Recursive
-
-You can start a silik kernel from a silik kernel. But you can only control the children-silik with `run "code" path_to_sub_silik`; and not directly /cmd (because it is catched before by the first silik).
-
-> You can hence implement your own sub-class of silik kernel, and add any method for spreading silik input to sub-kernels, and merging output of sub-kernels to produce silik output.
 
 ## Similar projects
 
