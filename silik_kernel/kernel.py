@@ -42,7 +42,7 @@ from ipykernel.connect import get_connection_file
 
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.7"
+SILIK_VERSION = "1.6.8"
 
 
 class SilikBaseKernel(Kernel):

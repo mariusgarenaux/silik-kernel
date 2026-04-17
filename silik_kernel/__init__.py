@@ -2,7 +2,7 @@
 
 from .kernel import SilikBaseKernel, SILIK_VERSION  # noqa: F401
 
-__version__ = "1.6.7"
+__version__ = "1.6.8"
 
 if __version__ != SILIK_VERSION:
     raise ValueError(
