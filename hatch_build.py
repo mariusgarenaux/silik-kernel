@@ -15,6 +15,7 @@ kernel_json = {
     "argv": ["python", "-m", "silik_kernel", "-f", "{connection_file}"],
     "display_name": "Silik Base Kernel",
     "language": "text",
+    "interrupt_mode": "message",
 }
 
 
