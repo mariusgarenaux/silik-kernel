@@ -38,12 +38,11 @@ from jupyter_client.manager import AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_core.paths import jupyter_runtime_dir
-from jupyter_client.connect import find_connection_file
 from ipykernel.connect import get_connection_file
 
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.6"
+SILIK_VERSION = "1.6.7"
 
 
 class SilikBaseKernel(Kernel):
