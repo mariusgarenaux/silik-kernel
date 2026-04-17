@@ -1,18 +1,28 @@
 # Silik command documentation
 
-• kernels : Returns the list of available kernel that can be started from silik.
+````text
+• kernels :
+        Returns the list of available kernel that can be started from silik.
 
         Example :
         ---
             In [1]: kernels
             Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
 
-• start : Starts a new kernel, from the root of the selected dir. Use tab completion or send 'kernels' command to see the list of available kernels.
+• new :
+        Opens a new kernel, from the root of the selected dir.
+        If a kernel name is given (python3, ...), the kernel is
+        started as a subprocess of this one.
+        You can also give the path to a connection file, and silik
+        kernel will connect directly with this kernel through the
+        connection file.
+        Use tab completion or send 'kernels' command to see the
+        list of available kernels.
 
         Positional arguments :
         ---
-            • kernel_type (str) : the type of the kernel which will be started. Must
-                be one of available kernels (see `kernels` command)
+            • kernel (str) : the type of the kernel which will be started, or
+            the path towards a connection file. See `kernels` command)
 
         Flags :
         ---
@@ -22,24 +32,26 @@
 
         Examples :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
 
-            In [2]: start python3 -l k2
+            In [2]: new python3 -l k2
             Out[2]:
             ├─ k1.py
             ╰─ k2.py
 
 
-            In [3]: start bash
+            In [3]: new bash
             Out[3]:
             ├─ k1.py
             ├─ k2.py
             ╰─ lune.sh
 
-• restart : Restart a kernel.
+
+• restart :
+        Restart a kernel.
 
         Positional arguments :
         ---
@@ -47,7 +59,7 @@
 
         Example :
         ---
-            In [1]: start python3 -l k1
+            In [1]: new python3 -l k1
             Out[1]:
             ╰─ k1.py
 
@@ -69,7 +81,10 @@
 
             NameError: name 'x' is not defined
 
-• info : Returns the path to the connection file of a kernel. The connection file stores information for frontends to connects to this kernel.
+• info :
+        Returns informations about a kernel. Returns the result of a kernel_info_reply,
+        see :
+        https://jupyter-client.readthedocs.io/en/stable/messaging.html#kernel-info
 
         Positional arguments :
         ---
@@ -78,14 +93,59 @@
 
         Example :
         ---
-            In [1]: start python3 -l k1
+            In [1]: new python3 -l k1
             Out[1]:
             ╰─ k1.py
 
             In [2]: info k1.py
-            Out[2]: /Users/username/silik/kernel-1786bfbe-3925-44bc-81e9-0fc1014d8ea6.json
+            Out[2]:
+            {
+                "status": "ok",
+                "protocol_version": "5.3",
+                "implementation": "ipython",
+                "implementation_version": "9.8.0",
+                "language_info": {
+                    "name": "python",
+                    "version": "3.12.12",
+                    "mimetype": "text/x-python",
+                    "codemirror_mode": {
+                        "name": "ipython",
+                        "version": 3
+                    },
+                    "pygments_lexer": "ipython3",
+                    "nbconvert_exporter": "python",
+                    "file_extension": ".py"
+                },
+                "banner": "Python 3.12.12 (main, Oct 14 2025, 21:38:21) [Clang 20.1.4 ]
+Type 'copyright', 'credits' or 'license' for more information
+IPython 9.8.0 -- An enhanced Interactive Python. Type '?' for help.
+Tip: Put a ';' at the end of a line to suppress the printing of output.
+",
+                "help_links": [...],
+                "supported_features": [...]
+            }
 
-• history : Display the history of the selected kernel. Sends an 'history_request' to the kernel (see https://jupyter-client.readthedocs.io/en/stable/messaging.html#history).
+• connect_info :
+        Returns the path to the connection file kernel.
+
+        Positional arguments :
+        ---
+            • path (str) : the path to the kernel to which get connection file
+                path
+
+
+        Example :
+        ---
+            In [1]: new python3 -l k1
+            Out[1]:
+            ╰─ k1.py
+
+            In [2]: connection_file k1.py
+            Out[2]: /Users/mgg/silik-kernel/kernel-86a19659-4598-4c82-9bc2-c2595310cf2c.json
+
+• history :
+        Display the history of the selected kernel. Sends an 'history_request' to
+        the kernel (see https://jupyter-client.readthedocs.io/en/stable/messaging.html#history).
 
         > ! not all kernel return information on this message request !
 
@@ -93,9 +153,13 @@
         ---
             • path (str) : the path to the kernel that will send its history
 
+        Optional arguments :
+        ---
+            • output (-o, --output): a flag, whether or not displaying cells output
+
         Example :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
@@ -133,7 +197,9 @@
             for i in range(10):
                 print(i*x)
 
-• run : Send a message to the active sub kernel. Returns the result through IOPub channel.
+• run :
+        Send a message to the active sub kernel. Returns the result in an
+        IOPubMsg.
 
         Positional arguments :
         ---
@@ -142,7 +208,7 @@
 
         Example :
         ---
-            In [1]: start python3 --label k1
+            In [1]: new python3 --label k1
             Out[1]:
             ╰─ k1.py
 
@@ -153,7 +219,11 @@
             In [3]: run "x" k1.py
             Out[2]: 18
 
-• source : Execute the content of a text file on the silik kernel. The text file is located on the filesystem where the kernel runs. Relative paths are from where you started the jupyter kernel.
+
+• source :
+        Execute the content of a text file on the silik kernel.
+        The text file is located on the filesystem where the kernel runs.
+        Relative paths are from where you started the jupyter kernel.
 
         The content must be commands that can be run on silik.
         Multiline commands are supported, but the text file must contain
@@ -168,14 +238,19 @@
         ---
             init.silik :
                 ```silik
-                start python3 --label k1
+                new python3 --label k1
                 run "x=19" k1.py
                 run "x" k1.py
                 ```
             In [1]: source init.txt
             Out[1]: 19
 
-• cat : Display the content of a text file. The text file is located on the filesystem where the kernel runs. Relative paths are from where you started the jupyter kernel.
+
+
+• cat :
+        Display the content of a text file. The text file is located on the
+        filesystem where the kernel runs. Relative paths are from where you started
+        the jupyter kernel.
 
         Positional arguments :
         ---
@@ -185,11 +260,14 @@
         ---
             In [3]: cat ex_scripts/ex_init.silik
             Out[3]:
-            start python3 -l k1
+            new python3 -l k1
             run "x=2" k1.py
             run "x" k1.py
 
-• > : Changes the mode of silik-kernel to 'command'. All future code cells will be run on a sub-kernel.
+
+• > :
+        Changes the mode of silik-kernel to 'command'. All future
+        code cells will be run on a sub-kernel.
 
         Positionals arguments :
         ---
@@ -207,7 +285,9 @@
             In [3]: 1+1
             Out[1]: 2
 
-• gateway : Changes the mode of silik-kernel to 'command'. All future code cells will be run on a sub-kernel.
+• gateway :
+        Changes the mode of silik-kernel to 'command'. All future
+        code cells will be run on a sub-kernel.
 
         Positionals arguments :
         ---
@@ -225,19 +305,24 @@
             In [3]: 1+1
             Out[1]: 2
 
-• tree : Display the whole tree (directories and kernels). The current directory is displayed with '<<' at its right.
+• tree :
+        Display the whole tree (directories and kernels) from the current node.
 
         Example :
         ---
             In [2]: tree
             Out[2]:
+            ~
             ├─ chatbots
             │  ├─ qwen4b-dist.txt
             │  ╰─ qwen1b7-local.txt
-            ╰─ python <<
+            ╰─ python
                 ╰─ k1.py
 
-• mkdir : Creates a directory inside the current directory. A directory can be used to store kernels. They are not persistent through sessions, it is just a way to organize all kernels.
+• mkdir :
+        Creates a directory inside the current directory. A directory can be
+        used to store kernels. They are not persistent through sessions,
+        it is just a way to organize all kernels.
 
         Positional arguments :
         ---
@@ -251,26 +336,29 @@
             In [2]: cd python_kernels/
             Out[2]: ~/python_kernels/
 
-            In [3]: start python3 -l k1
+            In [3]: new python3 -l k1
             Out[3]:
             ╰─ python_kernels <<
                 ╰─ k1.py
 
 
-            In [4]: start python3 -l k2
+            In [4]: new python3 -l k2
             Out[4]:
             ╰─ python_kernels <<
                 ├─ k1.py
                 ╰─ k2.py
 
-• cd : Allows to move between the folders (in silik only). Directories can be created in silik, but have no link with your real filesystem.
+
+• cd :
+        Allows to move between the folders (in silik only). Directories can
+        be created in silik, but have no link with your real filesystem.
 
         It is just a way to store and organize the kernel objects.
 
         Positional arguments :
         ---
-            • path (str): the path (relative or absolute) towards the new
-                directory
+            • path (str | None): the path (relative or absolute) towards the new
+                directory. If None, go back to home directory (~)
 
         Example :
         ---
@@ -288,35 +376,56 @@
 
             In [4]: tree
             Out[4]:
-            ├─ chatbots <<
+            chatbots
+            ├─ qwen4b-dist.txt
+            ╰─ qwen1b7-local.txt
+
+
+• ls :
+        Displays the content of a folder (in silik kernel).
+
+        Positional arguments :
+        ---
+            • path (str | None): the path to the directory. If None,
+                displays the content of the current dir.
+
+        Example :
+        ---
+            In [11]: tree
+            Out[11]:
+            ~
+            ├─ chatbots
             │  ├─ qwen4b-dist.txt
             │  ╰─ qwen1b7-local.txt
             ╰─ python
                ╰─ k1.py
 
-• ls : Displays the content of a folder (in silik kernel).
 
-        Positional arguments :
-        ---
-            • path (str): the path to the directory
+            In [12]: cd chatbots/
+            Out[12]: ~/chatbots/
+
+            In [13]: ls
+            Out[13]:
+            qwen4b-dist.txt
+            qwen1b7-local.txt
+
+• pwd :
+        Prints the current working directory (path from ~).
 
         Example :
         ---
-            In [2]: tree
-            Out[2]:
-            ├─ chatbots
-            │  ├─ qwen4b-dist.txt
-            │  ╰─ qwen1b7-local.txt
-            ╰─ python <<
-               ╰─ k1.py
-
-
-            In [3]: ls ../chatbots/
-            Out[3]:
+            In [8]: tree
+            Out[8]:
+            chatbots
             ├─ qwen4b-dist.txt
             ╰─ qwen1b7-local.txt
 
-• help : Display the help message.
+
+            In [9]: pwd
+            Out[9]: ~/chatbots/
+
+• help :
+        Display the help message.
 
         Flags :
         ---
@@ -333,3 +442,4 @@
                     ---
                         In [1]: kernels
                         Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
+````
