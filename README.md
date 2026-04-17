@@ -156,3 +156,12 @@ Moreover, the interaction with sub-kernels is not necessarly made by LLMs throug
 ## Help
 
 See [help.md](help.md) !
+
+### logging
+
+Set the environment variable below to redirect ipykernel logs to a file :
+
+```bash
+export SILIK_KERNEL_LOG_LEVEL=DEBUG
+export SILIK_KERNEL_LOG_DIR=~/.jupyter/logs/silik
+```

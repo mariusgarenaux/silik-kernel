@@ -7,6 +7,7 @@ import os
 
 from dataclasses import dataclass, field
 import random
+from datetime import datetime
 from pathlib import Path
 import logging
 import inspect
@@ -44,58 +45,31 @@ ALL_KERNELS_LABELS = [
 random.shuffle(ALL_KERNELS_LABELS)
 
 
-def add_custom_logger_handler(
-    logger: logging.Logger, log_dir="~/.jupyter/logs/silik.log"
-):
+def add_custom_logger_handler(logger: logging.Logger):
     """
     Add a custom handlers to the metakernel logger; located
     in ~/.jupyter/logs dir
     """
-    log_dir = Path(log_dir).expanduser()
-    fh = logging.FileHandler(log_dir, encoding="utf-8")
+    log_dir = os.getenv(
+        "SILIK_KERNEL_LOG_DIR", Path("~/.jupyter/logs/silik").expanduser()
+    )
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Get current datetime in format YYYY-MM-DD_HH-MM-SS
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_filename = os.path.join(log_dir, f"{timestamp}.log")
+
+    fh = logging.FileHandler(log_filename, encoding="utf-8")
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
-    logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL")
+    logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL", "INFO")
     logging_level_str = logging_level_env if logging_level_env is not None else "DEBUG"
     logger.setLevel(logging_level_str)
     return logger
 
 
-# def setup_kernel_logger(name, kernel_id, log_dir="~/.silik_logs"):
-#     """
-#     Creates a logger for the kernel. Set up SILIK_KERNEL_LOG environment
-#     variable to True before running the kernel, and create the following
-#     dir : ~/.silik_logs
-#     """
-#     log_dir = Path(log_dir).expanduser()
-#     if not os.path.isdir(log_dir):
-#         raise Exception(f"Please create a dir for kernel logs at {log_dir}")
-#     logging_level_env = os.getenv("SILIK_KERNEL_LOG_LEVEL")
-#     logging_level_str = logging_level_env if logging_level_env is not None else "DEBUG"
-#     logging_level = {
-#         "DEBUG": logging.DEBUG,
-#         "INFO": logging.INFO,
-#         "WARNING": logging.WARNING,
-#         "ERROR": logging.ERROR,
-#     }.get(logging_level_str, logging.DEBUG)
-
-#     logger = logging.getLogger(name)
-#     logger.setLevel(logging_level)
-#     logger.propagate = False
-
-#     if not logger.handlers:
-#         fh = logging.FileHandler(log_dir / f"{name}.log", encoding="utf-8")
-#         fmt = logging.Formatter(
-#             f"%(asctime)s | {kernel_id[:5]} | %(levelname)s | %(name)s | %(funcName)s | %(message)s"
-#         )
-#         fh.setFormatter(fmt)
-#         logger.addHandler(fh)
-
-#     return logger
-
-
-pretty_display = os.getenv("SILIK_KERNEL_PRETTY_DISPLAY")
+pretty_display = os.getenv("SILIK_KERNEL_PRETTY_DISPLAY", 1)
 PRETTY_DISPLAY = True if pretty_display in ["True", "true", "1", 1] else False
 
 
@@ -123,6 +97,9 @@ class KernelMetadata(NodeValue):
     type: str
     kernel_name: str
     label: str
+    remote_connection_file: (
+        bool  # whether the kernel was started by this process or not
+    )
     kernel_info: Optional[dict] = field(default=None)
     connection_file: Optional[str] = field(default=None)
 
@@ -331,7 +308,7 @@ class SilikCommand:
     handler: Annotated[
         Callable[
             [Namespace],
-            IOPubMsg | Coroutine[Any, Any, Optional[IOPubMsg]],
+            None | Coroutine[Any, Any, None],
         ],
         "Either asynchronous or synchronous method that is called to run the command. Take as input ParsedKomandArgs. Must output a Tuple (ExecutionResult, IOPubMsg) (or a coroutine in case of asynchronous method.)",
     ]

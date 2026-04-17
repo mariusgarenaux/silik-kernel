@@ -26,7 +26,6 @@ from .types import (
     IOPubMsg,
     JupyterMessage,
     ExecuteRequestContent,
-    ExecuteResultContent,
 )
 
 # External dependencies
@@ -39,7 +38,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from statikomand import KomandParser
 
-SILIK_VERSION = "1.6.5"
+SILIK_VERSION = "1.6.6"
 
 
 class SilikBaseKernel(Kernel):
@@ -83,13 +82,8 @@ class SilikBaseKernel(Kernel):
         super().__init__(**kwargs)
         self.kernel_label_rank = 1
 
-        should_custom_log = os.environ.get("SILIK_KERNEL_LOG", "False")
-        should_custom_log = (
-            True if should_custom_log in ["True", "true", "1"] else False
-        )
-        if should_custom_log:
+        if os.environ.get("SILIK_KERNEL_LOG_LEVEL", False):
             add_custom_logger_handler(self.log)
-            self.log.info(f"Started kernel {self.ident} and initalized logger")
 
         self.log.info(f"Started kernel {self.ident} and initalized logger")
 
@@ -101,7 +95,11 @@ class SilikBaseKernel(Kernel):
         # root node, but will be updated with other tree nodes :-)
 
         self.kernel_metadata = KernelMetadata(
-            id=self.ident, label="home.silik", type="silik", kernel_name="home"
+            id=self.ident,
+            label="home.silik",
+            type="silik",
+            kernel_name="home",
+            remote_connection_file=False,
         )
         self.active_kernel: KernelMetadata = self.kernel_metadata
         self.all_kernels: list[KernelMetadata] = []
@@ -188,17 +186,9 @@ class SilikBaseKernel(Kernel):
             # then either run code, or give it to sub-kernels
             if self.mode == "command":
                 self.log.info("Running in command mode.")
-                msg = await self.do_execute_on_silik(
+                await self.do_execute_on_silik(
                     code, silent, store_history, user_expressions, allow_stdin
                 )
-                if self.kernel_resp["status"] == "error":
-                    self.send_response(self.iopub_socket, "error", msg)
-                elif msg is not None:
-                    self.send_response(self.iopub_socket, "execute_result", msg)
-                self.log.info(f"Output of command : {msg}")
-                self.kernel_resp["payload"] = self.payload
-                return self.kernel_resp
-
             elif self.mode == "connect":
                 await self.do_execute_on_sub_kernel(
                     self.active_kernel,
@@ -208,15 +198,8 @@ class SilikBaseKernel(Kernel):
                     user_expressions,
                     allow_stdin,
                 )
-                if "payload" in self.kernel_resp:
-                    self.kernel_resp["payload"] = self.payload
-
-                return self.kernel_resp
             else:
                 self.mode = "command"
-                self.kernel_resp["payload"] = self.payload
-                self.kernel_resp["status"] = "error"
-                return self.kernel_resp
         except Exception as e:
             self.send_response(
                 self.iopub_socket,
@@ -227,8 +210,11 @@ class SilikBaseKernel(Kernel):
                     "traceback": traceback.format_exception(e),
                 },
             )
-            self.kernel_resp["payload"] = self.payload
             self.kernel_resp["status"] = "error"
+            return self.kernel_resp
+        else:
+            if "payload" in self.kernel_resp:
+                self.kernel_resp["payload"] = self.payload
             return self.kernel_resp
 
     async def do_execute_on_silik(
@@ -263,20 +249,19 @@ class SilikBaseKernel(Kernel):
         splitted_code = code.split("\n")
         self.log.debug(f"Splitted Multiline Code {splitted_code}")
 
-        msg = None
         for line in splitted_code:
             if line == "":
                 continue
             self.log.info(f"Running line : `{line}`")
-            msg = await self.do_execute_one_command_on_silik(
+            await self.do_execute_one_command_on_silik(
                 line, True, store_history, user_expressions, allow_stdin
             )
+            self.send_stream("\n")
             if self.mode == "connect":
                 # if mode has switched during execution
                 # we stop the cell execution, since the
                 # language has changed !
-                return msg
-        return msg
+                return
 
     async def do_execute_one_command_on_silik(
         self,
@@ -326,13 +311,18 @@ class SilikBaseKernel(Kernel):
         if cmd_name not in self.all_cmds:
             self.log.info(f"Command `{cmd_name}` was not found")
             self.kernel_resp["status"] = "error"
-            return {
-                "ename": "UnknownCommand",
-                "evalue": cmd_name,
-                "traceback": [
-                    f"Command `{cmd_name}` not found. Available commands : {list(self.all_cmds.keys())}"
-                ],
-            }
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "UnknownCommand",
+                    "evalue": cmd_name,
+                    "traceback": [
+                        f"Command `{cmd_name}` not found. Available commands : {list(self.all_cmds.keys())}"
+                    ],
+                },
+            )
+            return
         cmd_obj = self.all_cmds[cmd_name]
         if len(splitted) <= 1:
             self.log.debug(f"No arguments were found for command {cmd_name}")
@@ -349,21 +339,24 @@ class SilikBaseKernel(Kernel):
                     def __init__(self, cmd_name):
                         self.cmd = cmd_name
 
-                return self.help_cmd_handler(FakeNameSpace(cmd_name))
-
-            args = cmd_obj.parser.parse_args(a)
-            self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
-            msg = await cmd_obj.run(args)
+                msg = self.help_cmd_handler(FakeNameSpace(cmd_name))
+            else:
+                args = cmd_obj.parser.parse_args(a)
+                self.log.info(f"Parsed arguments of `{cmd_name}` : `{vars(args)}`")
+                msg = await cmd_obj.run(args)
+            return msg
         except Exception as e:
             self.log.info(f"Error when running command `{cmd_name}` : `{e}`")
             self.kernel_resp["status"] = "error"
-            return {
-                "ename": "CommandError",
-                "evalue": str(e),
-                "traceback": traceback.format_exception(e),
-            }
-        self.log.debug(f"Output of `{cmd_name}` :  `{msg}`")
-        return msg
+            self.send_response(
+                self.iopub_socket,
+                "error",
+                {
+                    "ename": "CommandError",
+                    "evalue": str(e),
+                    "traceback": traceback.format_exception(e),
+                },
+            )
 
     async def do_execute_on_sub_kernel(
         self,
@@ -402,8 +395,7 @@ class SilikBaseKernel(Kernel):
         ---
             The JupyterMessage from sub-kernel.
         """
-        km: AsyncKernelManager = self.mkm.get_kernel(sub_kernel.id)  # pyright: ignore[reportAssignmentType]
-        kc = km.client()
+        kc = self.create_kernel_client(sub_kernel)
         kc.start_channels()
         content: ExecuteRequestContent = {
             "code": code,
@@ -436,9 +428,7 @@ class SilikBaseKernel(Kernel):
 
     async def do_is_complete(self, code: str):  # pyright: ignore[reportIncompatibleMethodOverride]
         if self.mode == "connect":
-            km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
-            self.log.debug(f"Sending is_complete to {self.active_kernel}")
-            kc = km.client()
+            kc = self.create_kernel_client(self.active_kernel)
             kc.start_channels()
             msg = kc.session.msg(
                 "is_complete_request",
@@ -483,9 +473,7 @@ class SilikBaseKernel(Kernel):
         try:
             if self.mode == "connect":
                 # just act as a gateway towards active kernel
-                km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
-                self.log.debug(f"Sending do_complete to {self.active_kernel}")
-                kc = km.client()
+                kc = self.create_kernel_client(self.active_kernel)
                 kc.start_channels()
                 msg_type = "complete_request"
 
@@ -616,24 +604,25 @@ class SilikBaseKernel(Kernel):
 
         if self.mode == "command":
             content = {"status": "ok"}
-            self.session.send(stream, "interrupt_reply", content, parent, ident=ident)
+            self.session.send(stream, "interrupt_reply", content, parent, ident=ident)  # pyright: ignore[reportAttributeAccessIssue]
             return
 
         if self.mode == "connect":
-            km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
-            self.log.debug(f"Sending do_complete to {self.active_kernel}")
-            if km.kernel_spec is None:
-                self.log.warning(
-                    f"Kernelspec not known of kernel `{self.active_kernel}`. Can't send an `interrupt message`."
-                )
-                return
-            if km.kernel_spec.interrupt_mode != "message":
-                self.log.info(
-                    f"Interrupt messages are transferred only when the sub kernel has `interrupt_mode` set to `message`. See https://jupyter-client.readthedocs.io/en/stable/kernels.html. This is not the case for kernel `{self.active_kernel}`."
-                )
-                return
+            # km: AsyncKernelManager = self.mkm.get_kernel(self.active_kernel.id)  # pyright: ignore[reportAssignmentType]
+            # self.log.debug(f"Sending do_complete to {self.active_kernel}")
+            # if km.kernel_spec is None:
+            #     self.log.warning(
+            #         f"Kernelspec not known of kernel `{self.active_kernel}`. Can't send an `interrupt message`."
+            #     )
+            #     return
+            # if km.kernel_spec.interrupt_mode != "message":
+            #     self.log.info(
+            #         f"Interrupt messages are transferred only when the sub kernel has `interrupt_mode` set to `message`. See https://jupyter-client.readthedocs.io/en/stable/kernels.html. This is not the case for kernel `{self.active_kernel}`."
+            #     )
+            #     return
 
-            kc = km.client()
+            kc = self.create_kernel_client(self.active_kernel)
+
             kc.start_channels()
             msg = kc.session.msg("interrupt_request", {})
             kc.control_channel.send(msg)
@@ -653,7 +642,7 @@ class SilikBaseKernel(Kernel):
                     # /!\ for ipykernel subclasses, if the interrupt_request is not
                     # overridden, the kernel restarts on cell interruption.
 
-                    self.session.send(
+                    self.session.send(  # pyright: ignore[reportAttributeAccessIssue]
                         stream, "interrupt_reply", content, parent, ident=ident
                     )
                     kc.stop_channels()
@@ -688,25 +677,39 @@ class SilikBaseKernel(Kernel):
         Shutdown all sub kernels, and remove their connection files.
         """
 
-        # # remove comment to force removing connection files
         # connection file should be removed by sub kernel themselves
-        # for each_kernel in self.all_kernels:
-        #     connection_file = each_kernel.connection_file
-        #     if connection_file is not None:
-        #         filename = Path(connection_file).name
-        #         if filename.endswith(".json") and filename.startswith("kernel"):
-        #             self.log.info(
-        #                 f"Removing kernel connection file : {connection_file}"
-        #             )
-        #             if os.path.isfile(connection_file):
-        #                 os.remove(connection_file)
+        # in case, we double check
+        for each_kernel in self.all_kernels:
+            connection_file = each_kernel.connection_file
+            if connection_file is not None:
+                filename = Path(connection_file).name
+                if filename.endswith(".json") and filename.startswith("kernel"):
+                    if os.path.isfile(connection_file):
+                        os.remove(connection_file)
 
         await self.mkm.shutdown_all()
+
         return super().do_shutdown(restart)
 
     # ------------------------------------------------------ #
     # ------------- tools for executing code --------------- #
     # ------------------------------------------------------ #
+
+    def create_kernel_client(self, kernel: KernelMetadata) -> AsyncKernelClient:
+        """
+        Either uses kernel manager to create a kernel client (for kernel
+        started by this process); or creates an AsyncKernelClient with
+        an exisiting kernel connection file.
+        """
+        if kernel.remote_connection_file:
+            kc: AsyncKernelClient = AsyncKernelClient(
+                connection_file=kernel.connection_file
+            )
+            kc.load_connection_file()
+
+            return kc
+        km: AsyncKernelManager = self.mkm.get_kernel(kernel.id)  # pyright: ignore[reportAssignmentType]
+        return km.client()
 
     def complete_first_word(self, splitted_code: list[str], cursor_pos: int):
         first_word = splitted_code[0]
@@ -733,8 +736,8 @@ class SilikBaseKernel(Kernel):
             "metadata": {},
         }
 
-    def get_kernel_history(
-        self, kernel_id: UUID | str, output: bool | None = False
+    async def get_kernel_history(
+        self, kernel: KernelMetadata, output: bool | None = False
     ) -> list:
         """
         Returns the history of the kernel with kernel_id. Not all kernels
@@ -757,10 +760,7 @@ class SilikBaseKernel(Kernel):
         if output is None:
             output = False
 
-        if isinstance(kernel_id, UUID):
-            kernel_id = str(kernel_id)
-        self.log.debug(f"Getting history for {kernel_id}")
-        kc = self.mkm.get_kernel(kernel_id).client()
+        kc = self.create_kernel_client(kernel)
 
         try:
             kc.start_channels()
@@ -777,12 +777,11 @@ class SilikBaseKernel(Kernel):
 
             # Wait for reply
             while True:
-                msg = kc.get_shell_msg()
+                msg = await kc.get_shell_msg()
                 if msg["parent_header"].get("msg_id") != msg_id:
                     continue
 
                 if msg["msg_type"] == "history_reply":
-                    # history = msg["content"]["history"]
                     self.log.debug(f"Kernel history : {msg['content']}")
                     return msg["content"]["history"]
         finally:
@@ -805,9 +804,55 @@ class SilikBaseKernel(Kernel):
             if each_kernel.kernel_name == kernel_label:
                 return each_kernel
 
+    async def connect_to_living_kernel(
+        self, connection_file_path: str, kernel_label: str | None = None
+    ) -> KernelMetadata:
+        """
+        Creates a KernelMetadata from a living kernel.
+        """
+        kernel_label = self.new_kernel_label(kernel_label)
+
+        kc: AsyncKernelClient = AsyncKernelClient(connection_file=connection_file_path)
+        kc.load_connection_file()
+        self.log.info(f"Kernel client : {kc}")
+        kernel_info = await self.retrieve_kernel_information(kc)
+        if kernel_info is None:
+            raise ValueError(
+                f"Could not retrieve kernel information from `{connection_file_path}`"
+            )
+
+        file_extension = kernel_info.get("language_info", {}).get("file_extension", "")
+
+        return KernelMetadata(
+            id=str(uuid4()),
+            label=kernel_label + file_extension,
+            kernel_name=kernel_label,
+            type=kernel_info["language_info"]["name"],
+            kernel_info=kernel_info,
+            connection_file=connection_file_path,
+            remote_connection_file=True,
+        )
+
+    def new_kernel_label(self, kernel_label):
+        if kernel_label is None:
+            if self.kernel_label_rank > len(self.all_kernels_labels):
+                new_rank = self.kernel_label_rank % len(self.all_kernels_labels)
+                specifier = self.kernel_label_rank // len(self.all_kernels_labels)
+                kernel_label = self.all_kernels_labels[new_rank] + f"-{specifier}"
+                self.kernel_label_rank += 1
+            else:
+                kernel_label = self.all_kernels_labels[self.kernel_label_rank]
+                self.kernel_label_rank += 1
+        elif kernel_label in self.given_labels:
+            self.log.debug("Existing label")
+            raise ValueError(
+                f"Existing label for kernel : `{kernel_label}`. Choose an other one."
+            )
+        return kernel_label
+
     async def start_kernel(
         self, kernel_name: str, kernel_label: str | None = None
-    ) -> KernelMetadata | None:
+    ) -> KernelMetadata:
         """
         Starts a kernel from its name / type (python3, octave, ...). If no label
         is given, a random one is chosen from a (small list).
@@ -828,18 +873,7 @@ class SilikBaseKernel(Kernel):
         """
         self.log.debug(f"Starting new kernel of type : {kernel_name}")
         kernel_id = str(uuid4())
-        if kernel_label is None:
-            if self.kernel_label_rank > len(self.all_kernels_labels):
-                new_rank = self.kernel_label_rank % len(self.all_kernels_labels)
-                specifier = self.kernel_label_rank // len(self.all_kernels_labels)
-                kernel_label = self.all_kernels_labels[new_rank] + f"-{specifier}"
-                self.kernel_label_rank += 1
-            else:
-                kernel_label = self.all_kernels_labels[self.kernel_label_rank]
-                self.kernel_label_rank += 1
-        elif kernel_label in self.given_labels:
-            self.log.debug("Existing label")
-            return
+        kernel_label = self.new_kernel_label(kernel_label)
 
         await self.mkm.start_kernel(kernel_name=kernel_name, kernel_id=kernel_id)
         self.given_labels.append(kernel_label)
@@ -847,7 +881,9 @@ class SilikBaseKernel(Kernel):
         km: AsyncKernelManager = self.mkm.get_kernel(kernel_id)  # pyright: ignore[reportAssignmentType]
         connection_file = os.path.abspath(km.connection_file)
         self.log.debug(f"Connection file for kernel : {connection_file}")
-        kernel_info = await self.retrieve_kernel_information(km)
+
+        kc = km.client()
+        kernel_info = await self.retrieve_kernel_information(kc)
         if kernel_info is not None:
             file_extension = kernel_info.get("language_info", {}).get(
                 "file_extension", ""
@@ -862,14 +898,15 @@ class SilikBaseKernel(Kernel):
             type=kernel_name,
             kernel_info=kernel_info,
             connection_file=connection_file,
+            remote_connection_file=False,
         )
         self.log.debug(f"Successfully started kernel {new_kernel}")
         return new_kernel
 
     async def retrieve_kernel_information(
-        self, kernel_manager: AsyncKernelManager
+        self, kernel_client: AsyncKernelClient
     ) -> dict | None:
-        kernel_client = kernel_manager.client()
+
         kernel_client.start_channels()
         kernel_info = None
 
@@ -910,7 +947,7 @@ class SilikBaseKernel(Kernel):
                 # no need to listen on stdin
                 break
             try:
-                stdin_msg = await kc.get_stdin_msg(timeout=5)
+                stdin_msg = await kc.get_stdin_msg(timeout=1)
             except Exception as e:
                 self.log.info(
                     f"Error while listening on sub kernel stdin channel : {e}"
@@ -1010,7 +1047,7 @@ class SilikBaseKernel(Kernel):
     # ----------------- COMMANDS HANDLERS ------------------ #
     # ------------------------------------------------------ #
 
-    def gateway_cmd_handler(self, args) -> ExecuteResultContent:
+    def gateway_cmd_handler(self, args):
         """
         Changes the mode of silik-kernel to 'command'. All future
         code cells will be run on a sub-kernel.
@@ -1044,15 +1081,11 @@ class SilikBaseKernel(Kernel):
         self.active_kernel = node_at_path
 
         self.mode = "connect"
-        return {
-            "execution_count": self.execution_count,
-            "data": {
-                "text/plain": f"All cells are executed on kernel {self.active_kernel}. Run /cmd to exit this mode and select a new kernel."
-            },
-            "metadata": {},
-        }
+        self.send_stream(
+            f"All cells are executed on kernel {self.active_kernel}. Run /cmd to exit this mode and select a new kernel."
+        )
 
-    def help_cmd_handler(self, args) -> ExecuteResultContent:
+    def help_cmd_handler(self, args):
         """
         Display the help message.
 
@@ -1088,13 +1121,9 @@ class SilikBaseKernel(Kernel):
         else:
             content = f"• {cmd_name} : {self.all_cmds[cmd_name].handler.__doc__}"
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
+        self.send_stream(content)
 
-    def cd_cmd_handler(self, args) -> ExecuteResultContent:
+    def cd_cmd_handler(self, args):
         """
         Allows to move between the folders (in silik only). Directories can
         be created in silik, but have no link with your real filesystem.
@@ -1143,13 +1172,9 @@ class SilikBaseKernel(Kernel):
                 f"The node located at path {args.path} is not a KernelFolder."
             )
         self.current_dir = found_value
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": self.active_node.path},
-            "metadata": {},
-        }
+        self.send_stream(self.active_node.path)
 
-    async def start_kernel_cmd_handler(self, args) -> ExecuteResultContent:
+    async def start_kernel_cmd_handler(self, args):
         """
         Starts a new kernel, from the root of the selected dir.
         Use tab completion or send 'kernels' command to see the
@@ -1187,30 +1212,35 @@ class SilikBaseKernel(Kernel):
 
         """
 
-        if not args.kernel_type:
+        if not args.kernel:
             raise ValueError(
-                f"Please specify a kernel-type among {self.get_available_kernels}"
+                f"Please specify a kernel among {self.get_available_kernels}; or a path towards an existing connection file."
             )
 
-        new_kernel = await self.start_kernel(
-            args.kernel_type, None if not args.label else args.label
-        )
-        if new_kernel is None:
+        if args.kernel in self.get_available_kernels:
+            new_kernel = await self.start_kernel(
+                args.kernel, None if not args.label else args.label
+            )
+            if new_kernel is None:
+                raise ValueError(
+                    f"The label {args.label} already exists, please choose an other one."
+                )
+        elif os.path.isfile(args.kernel):
+            new_kernel = await self.connect_to_living_kernel(
+                args.kernel, None if not args.label else args.label
+            )
+        else:
             raise ValueError(
-                f"The label {args.label} already exists, please choose an other one."
+                "The given parameter is neither a kernel type, nor a path towards a connection file."
             )
 
         self.active_node.add_children(new_kernel)
         self.all_kernels.append(new_kernel)
         content = self.active_node.path
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
+        self.send_stream(content)
 
-    def tree_cmd_handler(self, args) -> ExecuteResultContent:
+    def tree_cmd_handler(self, args):
         """
         Display the whole tree (directories and kernels) from the current node.
 
@@ -1226,13 +1256,9 @@ class SilikBaseKernel(Kernel):
                 ╰─ k1.py
         """
         content = self.active_node.tree_to_str()
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
+        self.send_stream(content)
 
-    def restart_cmd_handler(self, args) -> ExecuteResultContent:
+    async def restart_cmd_handler(self, args):
         """
         Restart a kernel.
 
@@ -1268,15 +1294,11 @@ class SilikBaseKernel(Kernel):
         if not isinstance(kernel_to_restart, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
 
-        self.mkm.restart_kernel(kernel_to_restart.id)
+        await self.mkm.restart_kernel(kernel_to_restart.id)
         content = f"Restarted kernel {kernel_to_restart}"
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
+        self.send_stream(content)
 
-    def kernels_cmd_handler(self, args) -> ExecuteResultContent:
+    def kernels_cmd_handler(self, args):
         """
         Returns the list of available kernel that can be started from silik.
 
@@ -1286,14 +1308,9 @@ class SilikBaseKernel(Kernel):
             Out[1]: ['python3', 'pydantic_ai', 'octave', 'silik']
         """
         content = self.get_available_kernels
+        self.send_stream(content)
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
-
-    def history_cmd_handler(self, args) -> ExecuteResultContent:
+    async def history_cmd_handler(self, args):
         """
         Display the history of the selected kernel. Sends an 'history_request' to
         the kernel (see https://jupyter-client.readthedocs.io/en/stable/messaging.html#history).
@@ -1352,7 +1369,7 @@ class SilikBaseKernel(Kernel):
         if not isinstance(sub_kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
 
-        content = self.get_kernel_history(sub_kernel.id, output=args.output)
+        content = await self.get_kernel_history(sub_kernel, output=args.output)
         out = ""
         for session, line, code in content:
             indent = 3
@@ -1377,14 +1394,9 @@ class SilikBaseKernel(Kernel):
                 out += f"{prefix_in}\n{textwrap.indent(code, preshift, predicate=lambda line: True)}\n"
                 out += end_cell
             out += "\n\n"
+        self.send_stream(out)
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": out},
-            "metadata": {},
-        }
-
-    def mkdir_cmd_handler(self, args) -> ExecuteResultContent:
+    def mkdir_cmd_handler(self, args):
         """
         Creates a directory inside the current directory. A directory can be
         used to store kernels. They are not persistent through sessions,
@@ -1418,13 +1430,8 @@ class SilikBaseKernel(Kernel):
 
         node_value = KernelFolder(label=args.label, id=str(uuid4()))
         self.active_node.add_children(node_value)
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": ""},
-            "metadata": {},
-        }
 
-    async def run_cmd_handler(self, args) -> None:
+    async def run_cmd_handler(self, args):
         """
         Send a message to the active sub kernel. Returns the result in an
         IOPubMsg.
@@ -1452,12 +1459,11 @@ class SilikBaseKernel(Kernel):
 
         if not isinstance(target_kernel, KernelMetadata):
             raise ValueError(f"Could not find any kernel located at {args.path}")
-
         await self.do_execute_on_sub_kernel(
             sub_kernel=target_kernel, code=args.cmd, silent=False
         )
 
-    def exit_cmd_handler(self, args) -> ExecuteResultContent:
+    def exit_cmd_handler(self, args):
         raise NotImplementedError("Exit command is not yet implemented.")
 
     async def source_cmd_handler(self, args):
@@ -1493,10 +1499,9 @@ class SilikBaseKernel(Kernel):
         with open(path, "rt", encoding="utf-8") as f:
             code = f.read()
 
-        out = await self.do_execute_on_silik(code, False)
-        return out
+        await self.do_execute_on_silik(code, False)
 
-    def cat_cmd_handler(self, args) -> ExecuteResultContent:
+    def cat_cmd_handler(self, args):
         """
         Display the content of a text file. The text file is located on the
         filesystem where the kernel runs. Relative paths are from where you started
@@ -1519,13 +1524,9 @@ class SilikBaseKernel(Kernel):
         with open(path, "rt", encoding="utf-8") as f:
             content = f.read()
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": content},
-            "metadata": {},
-        }
+        self.send_stream(content)
 
-    def info_cmd_handler(self, args) -> ExecuteResultContent:
+    def info_cmd_handler(self, args):
         """
         Returns informations about a kernel. Returns the result of a kernel_info_reply,
         see :
@@ -1569,13 +1570,10 @@ class SilikBaseKernel(Kernel):
         kernel = self.active_node.find_node_value_from_path(args.path)
         if not isinstance(kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": json.dumps(kernel.kernel_info, indent=4)},
-            "metadata": {},
-        }
+        content = json.dumps(kernel.kernel_info, indent=4)
+        self.send_stream(content)
 
-    def connection_file_cmd_handler(self, args) -> ExecuteResultContent:
+    def connection_file_cmd_handler(self, args):
         """
         Returns the path to the connection file kernel.
 
@@ -1597,14 +1595,9 @@ class SilikBaseKernel(Kernel):
         kernel = self.active_node.find_node_value_from_path(args.path)
         if not isinstance(kernel, KernelMetadata):
             raise ValueError(f"Could not find kernel located at {args.path}")
+        self.send_stream(kernel.connection_file)
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": kernel.connection_file},
-            "metadata": {},
-        }
-
-    def ls_cmd_handler(self, args) -> ExecuteResultContent:
+    def ls_cmd_handler(self, args):
         """
         Displays the content of a folder (in silik kernel).
 
@@ -1650,14 +1643,9 @@ class SilikBaseKernel(Kernel):
             raise ValueError(
                 f"`ls` command only works for directory, not `{type(target_node)}`"
             )
+        self.send_stream(target_node.childrens_to_str())
 
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": target_node.childrens_to_str()},
-            "metadata": {},
-        }
-
-    def pwd_cmd_handler(self, args) -> ExecuteResultContent:
+    def pwd_cmd_handler(self, args):
         """
         Prints the current working directory (path from ~).
 
@@ -1673,11 +1661,7 @@ class SilikBaseKernel(Kernel):
             In [9]: pwd
             Out[9]: ~/chatbots/
         """
-        return {
-            "execution_count": self.execution_count,
-            "data": {"text/plain": self.active_node.path},
-            "metadata": {},
-        }
+        self.send_stream(self.active_node.path)
 
     def complete_help_cmd(self, word, rank):
         return self.complete_cmd_name(word)
@@ -1885,9 +1869,7 @@ class SilikBaseKernel(Kernel):
         help_cmd = SilikCommand(self.help_cmd_handler, help_parser)
 
         start_kernel_parser = KomandParser("start")
-        start_kernel_parser.add_argument(
-            "kernel_type", completer=self.complete_kernels_cmd
-        )
+        start_kernel_parser.add_argument("kernel", completer=self.complete_kernels_cmd)
         start_kernel_parser.add_argument("--label", "-l")
         start_kernel_cmd = SilikCommand(
             self.start_kernel_cmd_handler, start_kernel_parser
@@ -1941,6 +1923,30 @@ class SilikBaseKernel(Kernel):
             "pwd": pwd_cmd,
             "help": help_cmd,
         }
+
+    def send_stream(self, text):
+        """
+        Prints raw text in the stdout of the kernel
+        """
+        self.send_response(
+            self.iopub_socket,
+            "stream",
+            content={"name": "stdout", "text": text},
+        )
+
+    def send_out(self, text):
+        """
+        Sends an execute_result message, with text/plain mime type.
+        """
+        self.send_response(
+            self.iopub_socket,
+            "execute_result",
+            {
+                "execution_count": self.execution_count,
+                "data": {"text/plain": text},
+                "metadata": {},
+            },
+        )
 
 
 class SubKernelExecutionDone(Exception):

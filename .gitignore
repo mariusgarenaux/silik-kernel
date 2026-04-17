@@ -7,3 +7,5 @@
 ex_scripts/
 
 **/.ipynb_checkpoints
+
+**/logs
